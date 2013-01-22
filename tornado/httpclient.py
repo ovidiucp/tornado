@@ -29,18 +29,17 @@ you use a recent version of ``libcurl`` and ``pycurl``.  Currently the minimum
 supported version is 7.18.2, and the recommended version is 7.21.1 or newer.
 """
 
-from __future__ import absolute_import, division, with_statement
+from __future__ import absolute_import, division, print_function, with_statement
 
 import calendar
 import email.utils
-import httplib
 import time
 import weakref
 
 from tornado.escape import utf8
-from tornado import httputil
+from tornado import httputil, stack_context
 from tornado.ioloop import IOLoop
-from tornado.util import import_object, bytes_type, Configurable
+from tornado.util import Configurable
 
 
 class HTTPClient(object):
@@ -134,7 +133,7 @@ class AsyncHTTPClient(Configurable):
     def _async_clients(cls):
         attr_name = '_async_client_dict_' + cls.__name__
         if not hasattr(cls, attr_name):
-            setattr(cls, attr_name,  weakref.WeakKeyDictionary())
+            setattr(cls, attr_name, weakref.WeakKeyDictionary())
         return getattr(cls, attr_name)
 
     def __new__(cls, io_loop=None, force_instance=False, **kwargs):
@@ -195,19 +194,33 @@ class AsyncHTTPClient(Configurable):
 
 class HTTPRequest(object):
     """HTTP client request object."""
+
+    # Default values for HTTPRequest parameters.
+    # Merged with the values on the request object by AsyncHTTPClient
+    # implementations.
+    _DEFAULTS = dict(
+        connect_timeout=20.0,
+        request_timeout=20.0,
+        follow_redirects=True,
+        max_redirects=5,
+        use_gzip=True,
+        proxy_password='',
+        allow_nonstandard_methods=False,
+        validate_cert=True)
+
     def __init__(self, url, method="GET", headers=None, body=None,
                  auth_username=None, auth_password=None,
-                 connect_timeout=20.0, request_timeout=20.0,
-                 if_modified_since=None, follow_redirects=True,
-                 max_redirects=5, user_agent=None, use_gzip=True,
+                 connect_timeout=None, request_timeout=None,
+                 if_modified_since=None, follow_redirects=None,
+                 max_redirects=None, user_agent=None, use_gzip=None,
                  network_interface=None, streaming_callback=None,
                  header_callback=None, prepare_curl_callback=None,
                  proxy_host=None, proxy_port=None, proxy_username=None,
-                 proxy_password='', allow_nonstandard_methods=False,
-                 validate_cert=True, ca_certs=None,
+                 proxy_password=None, allow_nonstandard_methods=None,
+                 validate_cert=None, ca_certs=None,
                  allow_ipv6=None,
                  client_key=None, client_cert=None):
-        """Creates an `HTTPRequest`.
+        r"""Creates an `HTTPRequest`.
 
         All parameters except `url` are optional.
 
@@ -232,8 +245,13 @@ class HTTPRequest(object):
            `~HTTPResponse.body` and `~HTTPResponse.buffer` will be empty in
            the final response.
         :arg callable header_callback: If set, `header_callback` will
-           be run with each header line as it is received, and
-           `~HTTPResponse.headers` will be empty in the final response.
+           be run with each header line as it is received (including the
+           first line, e.g. ``HTTP/1.0 200 OK\r\n``, and a final line
+           containing only ``\r\n``.  All lines include the trailing newline
+           characters).  `~HTTPResponse.headers` will be empty in the final
+           response.  This is most useful in conjunction with
+           `streaming_callback`, because it's the only way to get access to
+           header data while the request is in progress.
         :arg callable prepare_curl_callback: If set, will be called with
            a `pycurl.Curl` object to allow the application to make additional
            `setopt` calls.
@@ -281,9 +299,9 @@ class HTTPRequest(object):
         self.user_agent = user_agent
         self.use_gzip = use_gzip
         self.network_interface = network_interface
-        self.streaming_callback = streaming_callback
-        self.header_callback = header_callback
-        self.prepare_curl_callback = prepare_curl_callback
+        self.streaming_callback = stack_context.wrap(streaming_callback)
+        self.header_callback = stack_context.wrap(header_callback)
+        self.prepare_curl_callback = stack_context.wrap(prepare_curl_callback)
         self.allow_nonstandard_methods = allow_nonstandard_methods
         self.validate_cert = validate_cert
         self.ca_certs = ca_certs
@@ -327,7 +345,7 @@ class HTTPResponse(object):
                  time_info=None, reason=None):
         self.request = request
         self.code = code
-        self.reason = reason or httplib.responses.get(code, "Unknown")
+        self.reason = reason or httputil.responses.get(code, "Unknown")
         if headers is not None:
             self.headers = headers
         else:
@@ -364,7 +382,7 @@ class HTTPResponse(object):
             raise self.error
 
     def __repr__(self):
-        args = ",".join("%s=%r" % i for i in self.__dict__.iteritems())
+        args = ",".join("%s=%r" % i for i in sorted(self.__dict__.items()))
         return "%s(%s)" % (self.__class__.__name__, args)
 
 
@@ -384,9 +402,28 @@ class HTTPError(Exception):
     """
     def __init__(self, code, message=None, response=None):
         self.code = code
-        message = message or httplib.responses.get(code, "Unknown")
+        message = message or httputil.responses.get(code, "Unknown")
         self.response = response
         Exception.__init__(self, "HTTP %d: %s" % (self.code, message))
+
+
+class _RequestProxy(object):
+    """Combines an object with a dictionary of defaults.
+
+    Used internally by AsyncHTTPClient implementations.
+    """
+    def __init__(self, request, defaults):
+        self.request = request
+        self.defaults = defaults
+
+    def __getattr__(self, name):
+        request_attr = getattr(self.request, name)
+        if request_attr is not None:
+            return request_attr
+        elif self.defaults is not None:
+            return self.defaults.get(name, None)
+        else:
+            return None
 
 
 def main():
@@ -403,15 +440,15 @@ def main():
                                     follow_redirects=options.follow_redirects,
                                     validate_cert=options.validate_cert,
                                     )
-        except HTTPError, e:
+        except HTTPError as e:
             if e.response is not None:
                 response = e.response
             else:
                 raise
         if options.print_headers:
-            print response.headers
+            print(response.headers)
         if options.print_body:
-            print response.body
+            print(response.body)
     client.close()
 
 if __name__ == "__main__":

@@ -13,13 +13,11 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
-from __future__ import absolute_import, division, with_statement
+from __future__ import absolute_import, division, print_function, with_statement
 
 import functools
-import sys
 
 from tornado.stack_context import ExceptionStackContext
-from tornado.util import raise_exc_info
 
 try:
     from concurrent import futures
@@ -89,16 +87,18 @@ if futures is None:
 else:
     Future = futures.Future
 
+
 class DummyExecutor(object):
     def submit(self, fn, *args, **kwargs):
         future = Future()
         try:
             future.set_result(fn(*args, **kwargs))
-        except Exception, e:
+        except Exception as e:
             future.set_exception(e)
         return future
 
 dummy_executor = DummyExecutor()
+
 
 def run_on_executor(fn):
     @functools.wraps(fn)
@@ -111,6 +111,8 @@ def run_on_executor(fn):
     return wrapper
 
 # TODO: this needs a better name
+
+
 def future_wrap(f):
     @functools.wraps(f)
     def wrapper(*args, **kwargs):
@@ -118,6 +120,7 @@ def future_wrap(f):
         if kwargs.get('callback') is not None:
             future.add_done_callback(kwargs.pop('callback'))
         kwargs['callback'] = future.set_result
+
         def handle_error(typ, value, tb):
             future.set_exception(value)
             return True

@@ -1,11 +1,10 @@
 #!/usr/bin/env python
-from __future__ import absolute_import, division, with_statement
+from __future__ import absolute_import, division, print_function, with_statement
 
 from tornado.log import app_log
 from tornado.stack_context import StackContext, wrap, NullContext
 from tornado.testing import AsyncHTTPTestCase, AsyncTestCase, ExpectLog
 from tornado.test.util import unittest
-from tornado.util import b
 from tornado.web import asynchronous, Application, RequestHandler
 import contextlib
 import functools
@@ -51,7 +50,7 @@ class HTTPStackContextTest(AsyncHTTPTestCase):
             self.http_client.fetch(self.get_url('/'), self.handle_response)
             self.wait()
         self.assertEqual(self.response.code, 500)
-        self.assertTrue(b('got expected exception') in self.response.body)
+        self.assertTrue(b'got expected exception' in self.response.body)
 
     def handle_response(self, response):
         self.response = response
@@ -77,7 +76,7 @@ class StackContextTest(AsyncTestCase):
             callback = wrap(callback)
             with StackContext(functools.partial(self.context, 'library')):
                 self.io_loop.add_callback(
-                  functools.partial(library_inner_callback, callback))
+                    functools.partial(library_inner_callback, callback))
 
         def library_inner_callback(callback):
             self.assertEqual(self.active_contexts[-2:],
@@ -168,6 +167,7 @@ class StackContextTest(AsyncTestCase):
 
         self.io_loop.add_callback(f1)
         self.wait()
+
 
 if __name__ == '__main__':
     unittest.main()

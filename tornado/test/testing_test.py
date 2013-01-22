@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 
-from __future__ import absolute_import, division, with_statement
-import time
+from __future__ import absolute_import, division, print_function, with_statement
 from tornado.testing import AsyncTestCase
 from tornado.test.util import unittest
 

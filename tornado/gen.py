@@ -62,7 +62,7 @@ it was called with one argument, the result is that argument.  If it was
 called with more than one argument or any keyword arguments, the result
 is an `Arguments` object, which is a named tuple ``(args, kwargs)``.
 """
-from __future__ import absolute_import, division, with_statement
+from __future__ import absolute_import, division, print_function, with_statement
 
 import functools
 import operator
@@ -374,6 +374,7 @@ class Runner(object):
                             "finished without waiting for callbacks %r" %
                             self.pending_callbacks)
                     self.deactivate_stack_context()
+                    self.deactivate_stack_context = None
                     return
                 except Exception:
                     self.finished = True

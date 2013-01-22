@@ -57,7 +57,7 @@ simply call methods on it.  You may create additional `OptionParser`
 instances to define isolated sets of options, such as for subcommands.
 """
 
-from __future__ import absolute_import, division, with_statement
+from __future__ import absolute_import, division, print_function, with_statement
 
 import datetime
 import re
@@ -68,6 +68,7 @@ import textwrap
 from tornado.escape import _unicode
 from tornado.log import define_logging_options
 from tornado import stack_context
+from tornado.util import basestring_type
 
 
 class Error(Exception):
@@ -171,7 +172,7 @@ class OptionParser(object):
         if args is None:
             args = sys.argv
         remaining = []
-        for i in xrange(1, len(args)):
+        for i in range(1, len(args)):
             # All things after the last option are command line arguments
             if not args[i].startswith("-"):
                 remaining = args[i:]
@@ -218,15 +219,15 @@ class OptionParser(object):
         """Prints all the command line options to stderr (or another file)."""
         if file is None:
             file = sys.stderr
-        print >> file, "Usage: %s [OPTIONS]" % sys.argv[0]
-        print >> file, "\nOptions:\n"
+        print("Usage: %s [OPTIONS]" % sys.argv[0], file=file)
+        print("\nOptions:\n", file=file)
         by_group = {}
-        for option in self._options.itervalues():
+        for option in self._options.values():
             by_group.setdefault(option.group_name, []).append(option)
 
         for filename, o in sorted(by_group.items()):
             if filename:
-                print >> file, "\n%s options:\n" % os.path.normpath(filename)
+                print("\n%s options:\n" % os.path.normpath(filename), file=file)
             o.sort(key=lambda option: option.name)
             for option in o:
                 prefix = option.name
@@ -238,10 +239,10 @@ class OptionParser(object):
                 lines = textwrap.wrap(description, 79 - 35)
                 if len(prefix) > 30 or len(lines) == 0:
                     lines.insert(0, '')
-                print >> file, "  --%-30s %s" % (prefix, lines[0])
+                print("  --%-30s %s" % (prefix, lines[0]), file=file)
                 for line in lines[1:]:
-                    print >> file, "%-34s %s" % (' ', line)
-        print >> file
+                    print("%-34s %s" % (' ', line), file=file)
+        print(file=file)
 
     def _help_callback(self, value):
         if value:
@@ -256,9 +257,54 @@ class OptionParser(object):
         for callback in self._parse_callbacks:
             callback()
 
+    def mockable(self):
+        """Returns a wrapper around self that is compatible with `mock.patch`.
+
+        The `mock.patch` function (included in the standard library
+        `unittest.mock` package since Python 3.3, or in the
+        third-party `mock` package for older versions of Python) is
+        incompatible with objects like ``options`` that override
+        ``__getattr__`` and ``__setattr__``.  This function returns an
+        object that can be used with `mock.patch.object` to modify
+        option values::
+
+            with mock.patch.object(options.mockable(), 'name', value):
+                assert options.name == value
+        """
+        return _Mockable(self)
+
+
+class _Mockable(object):
+    """`mock.patch` compatible wrapper for `OptionParser`.
+
+    As of ``mock`` version 1.0.1, when an object uses ``__getattr__``
+    hooks instead of ``__dict__``, ``patch.__exit__`` tries to delete
+    the attribute it set instead of setting a new one (assuming that
+    the object does not catpure ``__setattr__``, so the patch
+    created a new attribute in ``__dict__``).
+
+    _Mockable's getattr and setattr pass through to the underlying
+    OptionParser, and delattr undoes the effect of a previous setattr.
+    """
+    def __init__(self, options):
+        # Modify __dict__ directly to bypass __setattr__
+        self.__dict__['_options'] = options
+        self.__dict__['_originals'] = {}
+
+    def __getattr__(self, name):
+        return getattr(self._options, name)
+
+    def __setattr__(self, name, value):
+        assert name not in self._originals, "don't reuse mockable objects"
+        self._originals[name] = getattr(self._options, name)
+        setattr(self._options, name, value)
+
+    def __delattr__(self, name):
+        setattr(self._options, name, self._originals.pop(name))
+
 
 class _Option(object):
-    def __init__(self, name, default=None, type=basestring, help=None,
+    def __init__(self, name, default=None, type=basestring_type, help=None,
                  metavar=None, multiple=False, file_name=None, group_name=None,
                  callback=None):
         if default is None and multiple:
@@ -282,7 +328,7 @@ class _Option(object):
             datetime.datetime: self._parse_datetime,
             datetime.timedelta: self._parse_timedelta,
             bool: self._parse_bool,
-            basestring: self._parse_string,
+            basestring_type: self._parse_string,
         }.get(self.type, self.type)
         if self.multiple:
             self._value = []
@@ -423,6 +469,7 @@ def print_help(file=None):
     See `OptionParser.print_help`.
     """
     return options.print_help(file)
+
 
 def add_parse_callback(callback):
     """Adds a parse callback, to be invoked when option parsing is done.

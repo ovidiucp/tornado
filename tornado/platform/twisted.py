@@ -64,11 +64,10 @@ reactor.  Recommended usage::
 This module has been tested with Twisted versions 11.0.0 and newer.
 """
 
-from __future__ import absolute_import, division, with_statement
+from __future__ import absolute_import, division, print_function, with_statement
 
 import functools
 import datetime
-import time
 
 from twisted.internet.posixbase import PosixReactorBase
 from twisted.internet.interfaces import \
@@ -85,6 +84,7 @@ from tornado.stack_context import NullContext, wrap
 from tornado.ioloop import IOLoop
 
 
+@implementer(IDelayedCall)
 class TornadoDelayedCall(object):
     """DelayedCall object for Tornado."""
     def __init__(self, reactor, seconds, f, *args, **kw):
@@ -125,10 +125,9 @@ class TornadoDelayedCall(object):
 
     def active(self):
         return self._active
-# Fake class decorator for python 2.5 compatibility
-TornadoDelayedCall = implementer(IDelayedCall)(TornadoDelayedCall)
 
 
+@implementer(IReactorTime, IReactorFDSet)
 class TornadoReactor(PosixReactorBase):
     """Twisted reactor built on the Tornado IOLoop.
 
@@ -235,7 +234,7 @@ class TornadoReactor(PosixReactorBase):
             with NullContext():
                 self._fds[fd] = (reader, None)
                 self._io_loop.add_handler(fd, self._invoke_callback,
-                                         IOLoop.READ)
+                                          IOLoop.READ)
 
     def addWriter(self, writer):
         """Add a FileDescriptor for notification of data available to write."""
@@ -254,7 +253,7 @@ class TornadoReactor(PosixReactorBase):
             with NullContext():
                 self._fds[fd] = (None, writer)
                 self._io_loop.add_handler(fd, self._invoke_callback,
-                                         IOLoop.WRITE)
+                                          IOLoop.WRITE)
 
     def removeReader(self, reader):
         """Remove a Selectable for notification of data available to read."""
@@ -316,7 +315,6 @@ class TornadoReactor(PosixReactorBase):
 
     def mainLoop(self):
         self._io_loop.start()
-TornadoReactor = implementer(IReactorTime, IReactorFDSet)(TornadoReactor)
 
 
 class _TestReactor(TornadoReactor):
@@ -352,6 +350,8 @@ def install(io_loop=None):
     installReactor(reactor)
     return reactor
 
+
+@implementer(IReadDescriptor, IWriteDescriptor)
 class _FD(object):
     def __init__(self, fd, handler):
         self.fd = fd
@@ -378,7 +378,7 @@ class _FD(object):
 
     def logPrefix(self):
         return ''
-_FD = implementer(IReadDescriptor, IWriteDescriptor)(_FD)
+
 
 class TwistedIOLoop(tornado.ioloop.IOLoop):
     """IOLoop implementation that runs on Twisted.
@@ -405,15 +405,15 @@ class TwistedIOLoop(tornado.ioloop.IOLoop):
         if fd in self.fds:
             raise ValueError('fd %d added twice' % fd)
         self.fds[fd] = _FD(fd, wrap(handler))
-        if events | tornado.ioloop.IOLoop.READ:
+        if events & tornado.ioloop.IOLoop.READ:
             self.fds[fd].reading = True
             self.reactor.addReader(self.fds[fd])
-        if events | tornado.ioloop.IOLoop.WRITE:
+        if events & tornado.ioloop.IOLoop.WRITE:
             self.fds[fd].writing = True
             self.reactor.addWriter(self.fds[fd])
 
     def update_handler(self, fd, events):
-        if events | tornado.ioloop.IOLoop.READ:
+        if events & tornado.ioloop.IOLoop.READ:
             if not self.fds[fd].reading:
                 self.fds[fd].reading = True
                 self.reactor.addReader(self.fds[fd])
@@ -421,7 +421,7 @@ class TwistedIOLoop(tornado.ioloop.IOLoop):
             if self.fds[fd].reading:
                 self.fds[fd].reading = False
                 self.reactor.removeReader(self.fds[fd])
-        if events | tornado.ioloop.IOLoop.WRITE:
+        if events & tornado.ioloop.IOLoop.WRITE:
             if not self.fds[fd].writing:
                 self.fds[fd].writing = True
                 self.reactor.addWriter(self.fds[fd])
@@ -431,6 +431,8 @@ class TwistedIOLoop(tornado.ioloop.IOLoop):
                 self.reactor.removeWriter(self.fds[fd])
 
     def remove_handler(self, fd):
+        if fd not in self.fds:
+            return
         self.fds[fd].lost = True
         if self.fds[fd].reading:
             self.reactor.removeReader(self.fds[fd])
@@ -444,6 +446,12 @@ class TwistedIOLoop(tornado.ioloop.IOLoop):
     def stop(self):
         self.reactor.crash()
 
+    def _run_callback(self, callback, *args, **kwargs):
+        try:
+            callback(*args, **kwargs)
+        except Exception:
+            self.handle_callback_exception(callback)
+
     def add_timeout(self, deadline, callback):
         if isinstance(deadline, (int, long, float)):
             delay = max(deadline - self.time(), 0)
@@ -451,13 +459,14 @@ class TwistedIOLoop(tornado.ioloop.IOLoop):
             delay = deadline.total_seconds()
         else:
             raise TypeError("Unsupported deadline %r")
-        return self.reactor.callLater(delay, wrap(callback))
+        return self.reactor.callLater(delay, self._run_callback, wrap(callback))
 
     def remove_timeout(self, timeout):
         timeout.cancel()
 
-    def add_callback(self, callback):
-        self.reactor.callFromThread(wrap(callback))
+    def add_callback(self, callback, *args, **kwargs):
+        self.reactor.callFromThread(self._run_callback,
+                                    wrap(callback), *args, **kwargs)
 
-    def add_callback_from_signal(self, callback):
-        self.add_callback(callback)
+    def add_callback_from_signal(self, callback, *args, **kwargs):
+        self.add_callback(callback, *args, **kwargs)

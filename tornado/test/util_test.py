@@ -1,7 +1,9 @@
-from __future__ import absolute_import, division, with_statement
+# coding: utf-8
+from __future__ import absolute_import, division, print_function, with_statement
 import sys
 
-from tornado.util import raise_exc_info, Configurable
+from tornado.escape import utf8
+from tornado.util import raise_exc_info, Configurable, u
 from tornado.test.util import unittest
 
 
@@ -22,8 +24,9 @@ class RaiseExcInfoTest(unittest.TestCase):
         try:
             raise_exc_info(exc_info)
             self.fail("didn't get expected exception")
-        except TwoArgException, e:
+        except TwoArgException as e:
             self.assertIs(e, exc_info[1])
+
 
 class TestConfigurable(Configurable):
     @classmethod
@@ -34,13 +37,16 @@ class TestConfigurable(Configurable):
     def configurable_default(cls):
         return TestConfig1
 
+
 class TestConfig1(TestConfigurable):
     def initialize(self, a=None):
         self.a = a
 
+
 class TestConfig2(TestConfigurable):
     def initialize(self, b=None):
         self.b = b
+
 
 class ConfigurableTest(unittest.TestCase):
     def setUp(self):
@@ -112,3 +118,8 @@ class ConfigurableTest(unittest.TestCase):
         # args bound in configure don't apply when using the subclass directly
         obj = TestConfig2()
         self.assertIs(obj.b, None)
+
+
+class UnicodeLiteralTest(unittest.TestCase):
+    def test_unicode_escapes(self):
+        self.assertEqual(utf8(u('\u00e9')), b'\xc3\xa9')

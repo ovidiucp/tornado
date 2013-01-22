@@ -13,7 +13,7 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
-from __future__ import absolute_import, division, with_statement
+from __future__ import absolute_import, division, print_function, with_statement
 
 import logging
 import re
@@ -23,21 +23,21 @@ from tornado.concurrent import Future, future_wrap
 from tornado.escape import utf8, to_unicode
 from tornado import gen
 from tornado.iostream import IOStream
-from tornado.netutil import TCPServer
+from tornado.tcpserver import TCPServer
 from tornado.testing import AsyncTestCase, LogTrapTestCase, get_unused_port
-from tornado.util import b
+
 
 class CapServer(TCPServer):
     def handle_stream(self, stream, address):
         logging.info("handle_stream")
         self.stream = stream
-        self.stream.read_until(b("\n"), self.handle_read)
+        self.stream.read_until(b"\n", self.handle_read)
 
     def handle_read(self, data):
         logging.info("handle_read")
         data = to_unicode(data)
         if data == data.upper():
-            self.stream.write(b("error\talready capitalized\n"))
+            self.stream.write(b"error\talready capitalized\n")
         else:
             # data already has \n
             self.stream.write(utf8("ok\t%s" % data.upper()))
@@ -76,14 +76,14 @@ class ManualCapClient(BaseCapClient):
     def handle_connect(self):
         logging.info("handle_connect")
         self.stream.write(utf8(self.request_data + "\n"))
-        self.stream.read_until(b('\n'), callback=self.handle_read)
+        self.stream.read_until(b'\n', callback=self.handle_read)
 
     def handle_read(self, data):
         logging.info("handle_read")
         self.stream.close()
         try:
             self.future.set_result(self.process_response(data))
-        except CapError, e:
+        except CapError as e:
             self.future.set_exception(e)
 
 
@@ -100,7 +100,7 @@ class DecoratorCapClient(BaseCapClient):
     def handle_connect(self):
         logging.info("handle_connect")
         self.stream.write(utf8(self.request_data + "\n"))
-        self.stream.read_until(b('\n'), callback=self.handle_read)
+        self.stream.read_until(b'\n', callback=self.handle_read)
 
     def handle_read(self, data):
         logging.info("handle_read")
@@ -118,7 +118,7 @@ class GeneratorCapClient(BaseCapClient):
         yield gen.Task(stream.connect, ('127.0.0.1', self.port))
         stream.write(utf8(request_data + '\n'))
         logging.info('reading')
-        data = yield gen.Task(stream.read_until, b('\n'))
+        data = yield gen.Task(stream.read_until, b'\n')
         logging.info('returning')
         stream.close()
         callback(self.process_response(data))
@@ -171,7 +171,7 @@ class ClientTestMixin(object):
         @gen.engine
         def f():
             with self.assertRaisesRegexp(CapError, "already capitalized"):
-                 yield self.client.capitalize("HELLO")
+                yield self.client.capitalize("HELLO")
             self.stop()
         f()
         self.wait()

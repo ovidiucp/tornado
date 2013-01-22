@@ -1,4 +1,4 @@
-from __future__ import absolute_import, division, with_statement
+from __future__ import absolute_import, division, print_function, with_statement
 from tornado import gen
 from tornado.escape import json_decode, utf8, to_unicode, recursive_unicode, native_str, to_basestring
 from tornado.iostream import IOStream
@@ -7,8 +7,8 @@ from tornado.simple_httpclient import SimpleAsyncHTTPClient
 from tornado.template import DictLoader
 from tornado.testing import AsyncHTTPTestCase, ExpectLog
 from tornado.test.util import unittest
-from tornado.util import b, bytes_type, ObjectDict
-from tornado.web import RequestHandler, authenticated, Application, asynchronous, url, HTTPError, StaticFileHandler, _create_signature, create_signed_value
+from tornado.util import u, bytes_type, ObjectDict, unicode_type
+from tornado.web import RequestHandler, authenticated, Application, asynchronous, url, HTTPError, StaticFileHandler, _create_signature, create_signed_value, ErrorHandler
 
 import binascii
 import datetime
@@ -18,7 +18,11 @@ import re
 import socket
 import sys
 
-wsgi_safe = []
+wsgi_safe_tests = []
+
+def wsgi_safe(cls):
+    wsgi_safe_tests.append(cls)
+    return cls
 
 class WebTestCase(AsyncHTTPTestCase):
     """Base class for web tests that also supports WSGI mode.
@@ -35,6 +39,7 @@ class WebTestCase(AsyncHTTPTestCase):
 
     def get_app_kwargs(self):
         return {}
+
 
 class SimpleHandlerTestCase(WebTestCase):
     """Simplified base class for tests that work with a single handler class.
@@ -62,15 +67,15 @@ class CookieTestRequestHandler(RequestHandler):
 class SecureCookieTest(unittest.TestCase):
     def test_round_trip(self):
         handler = CookieTestRequestHandler()
-        handler.set_secure_cookie('foo', b('bar'))
-        self.assertEqual(handler.get_secure_cookie('foo'), b('bar'))
+        handler.set_secure_cookie('foo', b'bar')
+        self.assertEqual(handler.get_secure_cookie('foo'), b'bar')
 
     def test_cookie_tampering_future_timestamp(self):
         handler = CookieTestRequestHandler()
         # this string base64-encodes to '12345678'
-        handler.set_secure_cookie('foo', binascii.a2b_hex(b('d76df8e7aefc')))
+        handler.set_secure_cookie('foo', binascii.a2b_hex(b'd76df8e7aefc'))
         cookie = handler._cookies['foo']
-        match = re.match(b(r'12345678\|([0-9]+)\|([0-9a-f]+)'), cookie)
+        match = re.match(br'12345678\|([0-9]+)\|([0-9a-f]+)', cookie)
         self.assertTrue(match)
         timestamp = match.group(1)
         sig = match.group(2)
@@ -83,11 +88,11 @@ class SecureCookieTest(unittest.TestCase):
         # works)
         self.assertEqual(
             _create_signature(handler.application.settings["cookie_secret"],
-                              'foo', '1234', b('5678') + timestamp),
+                              'foo', '1234', b'5678' + timestamp),
             sig)
         # tamper with the cookie
         handler._cookies['foo'] = utf8('1234|5678%s|%s' % (
-                to_basestring(timestamp), to_basestring(sig)))
+            to_basestring(timestamp), to_basestring(sig)))
         # it gets rejected
         with ExpectLog(gen_log, "Cookie timestamp in future"):
             self.assertTrue(handler.get_secure_cookie('foo') is None)
@@ -96,8 +101,8 @@ class SecureCookieTest(unittest.TestCase):
         # Secure cookies accept arbitrary data (which is base64 encoded).
         # Note that normal cookies accept only a subset of ascii.
         handler = CookieTestRequestHandler()
-        handler.set_secure_cookie('foo', b('\xe9'))
-        self.assertEqual(handler.get_secure_cookie('foo'), b('\xe9'))
+        handler.set_secure_cookie('foo', b'\xe9')
+        self.assertEqual(handler.get_secure_cookie('foo'), b'\xe9')
 
 
 class CookieTest(WebTestCase):
@@ -107,8 +112,8 @@ class CookieTest(WebTestCase):
                 # Try setting cookies with different argument types
                 # to ensure that everything gets encoded correctly
                 self.set_cookie("str", "asdf")
-                self.set_cookie("unicode", u"qwer")
-                self.set_cookie("bytes", b("zxcv"))
+                self.set_cookie("unicode", u("qwer"))
+                self.set_cookie("bytes", b"zxcv")
 
         class GetCookieHandler(RequestHandler):
             def get(self):
@@ -118,8 +123,8 @@ class CookieTest(WebTestCase):
             def get(self):
                 # unicode domain and path arguments shouldn't break things
                 # either (see bug #285)
-                self.set_cookie("unicode_args", "blah", domain=u"foo.com",
-                                path=u"/foo")
+                self.set_cookie("unicode_args", "blah", domain=u("foo.com"),
+                                path=u("/foo"))
 
         class SetCookieSpecialCharHandler(RequestHandler):
             def get(self):
@@ -152,13 +157,13 @@ class CookieTest(WebTestCase):
 
     def test_get_cookie(self):
         response = self.fetch("/get", headers={"Cookie": "foo=bar"})
-        self.assertEqual(response.body, b("bar"))
+        self.assertEqual(response.body, b"bar")
 
         response = self.fetch("/get", headers={"Cookie": 'foo="bar"'})
-        self.assertEqual(response.body, b("bar"))
+        self.assertEqual(response.body, b"bar")
 
         response = self.fetch("/get", headers={"Cookie": "/=exception;"})
-        self.assertEqual(response.body, b("default"))
+        self.assertEqual(response.body, b"default")
 
     def test_set_cookie_domain(self):
         response = self.fetch("/set_domain")
@@ -252,7 +257,7 @@ class ConnectionCloseTest(WebTestCase):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM, 0)
         s.connect(("localhost", self.get_http_port()))
         self.stream = IOStream(s, io_loop=self.io_loop)
-        self.stream.write(b("GET / HTTP/1.0\r\n\r\n"))
+        self.stream.write(b"GET / HTTP/1.0\r\n\r\n")
         self.wait()
 
     def on_handler_waiting(self):
@@ -278,11 +283,11 @@ class EchoHandler(RequestHandler):
                     raise Exception("incorrect type for value: %r" %
                                     type(value))
             for value in self.get_arguments(key):
-                if type(value) != unicode:
+                if type(value) != unicode_type:
                     raise Exception("incorrect type for value: %r" %
                                     type(value))
         for arg in path_args:
-            if type(arg) != unicode:
+            if type(arg) != unicode_type:
                 raise Exception("incorrect type for path arg: %r" % type(arg))
         self.write(dict(path=self.request.path,
                         path_args=path_args,
@@ -308,9 +313,9 @@ class RequestEncodingTest(WebTestCase):
     def test_group_encoding(self):
         # Path components and query arguments should be decoded the same way
         self.assertEqual(self.fetch_json('/group/%C3%A9?arg=%C3%A9'),
-                         {u"path": u"/group/%C3%A9",
-                          u"path_args": [u"\u00e9"],
-                          u"args": {u"arg": [u"\u00e9"]}})
+                         {u("path"): u("/group/%C3%A9"),
+                          u("path_args"): [u("\u00e9")],
+                          u("args"): {u("arg"): [u("\u00e9")]}})
 
     def test_slashes(self):
         # Slashes may be escaped to appear as a single "directory" in the path,
@@ -333,13 +338,13 @@ class TypeCheckHandler(RequestHandler):
 
         # get_argument is an exception from the general rule of using
         # type str for non-body data mainly for historical reasons.
-        self.check_type('argument', self.get_argument('foo'), unicode)
-        self.check_type('cookie_key', self.cookies.keys()[0], str)
-        self.check_type('cookie_value', self.cookies.values()[0].value, str)
+        self.check_type('argument', self.get_argument('foo'), unicode_type)
+        self.check_type('cookie_key', list(self.cookies.keys())[0], str)
+        self.check_type('cookie_value', list(self.cookies.values())[0].value, str)
 
         # Secure cookies return bytes because they can contain arbitrary
         # data, but regular cookies are native strings.
-        if self.cookies.keys() != ['asdf']:
+        if list(self.cookies.keys()) != ['asdf']:
             raise Exception("unexpected values for cookie keys: %r" %
                             self.cookies.keys())
         self.check_type('get_secure_cookie', self.get_secure_cookie('asdf'), bytes_type)
@@ -355,11 +360,11 @@ class TypeCheckHandler(RequestHandler):
     def get(self, path_component):
         # path_component uses type unicode instead of str for consistency
         # with get_argument()
-        self.check_type('path_component', path_component, unicode)
+        self.check_type('path_component', path_component, unicode_type)
         self.write(self.errors)
 
     def post(self, path_component):
-        self.check_type('path_component', path_component, unicode)
+        self.check_type('path_component', path_component, unicode_type)
         self.write(self.errors)
 
     def check_type(self, name, obj, expected_type):
@@ -383,7 +388,7 @@ class DecodeArgHandler(RequestHandler):
         def describe(s):
             if type(s) == bytes_type:
                 return ["bytes", native_str(binascii.b2a_hex(s))]
-            elif type(s) == unicode:
+            elif type(s) == unicode_type:
                 return ["unicode", s]
             raise Exception("unknown type")
         self.write({'path': describe(arg),
@@ -460,9 +465,9 @@ class HeaderInjectionHandler(RequestHandler):
         try:
             self.set_header("X-Foo", "foo\r\nX-Bar: baz")
             raise Exception("Didn't get expected exception")
-        except ValueError, e:
+        except ValueError as e:
             if "Unsafe header value" in str(e):
-                self.finish(b("ok"))
+                self.finish(b"ok")
             else:
                 raise
 
@@ -473,22 +478,23 @@ class GetArgumentHandler(RequestHandler):
 
 
 # This test is shared with wsgi_test.py
+@wsgi_safe
 class WSGISafeWebTest(WebTestCase):
     COOKIE_SECRET = "WebTest.COOKIE_SECRET"
 
     def get_app_kwargs(self):
         loader = DictLoader({
-                "linkify.html": "{% module linkify(message) %}",
-                "page.html": """\
+            "linkify.html": "{% module linkify(message) %}",
+            "page.html": """\
 <html><head></head><body>
 {% for e in entries %}
 {% module Template("entry.html", entry=e) %}
 {% end %}
 </body></html>""",
-                "entry.html": """\
+            "entry.html": """\
 {{ set_resources(embedded_css=".entry { margin-bottom: 1em; }", embedded_javascript="js_embed()", css_files=["/base.css", "/foo.css"], javascript_files="/common.js", html_head="<meta>", html_body='<script src="/analytics.js"/>') }}
 <div class="entry">...</div>""",
-                })
+        })
         return dict(template_loader=loader,
                     autoescape="xhtml_escape",
                     cookie_secret=self.COOKIE_SECRET)
@@ -505,7 +511,7 @@ class WSGISafeWebTest(WebTestCase):
             url("/redirect", RedirectHandler),
             url("/header_injection", HeaderInjectionHandler),
             url("/get_argument", GetArgumentHandler),
-            ]
+        ]
         return urls
 
     def fetch_json(self, *args, **kwargs):
@@ -535,15 +541,15 @@ class WSGISafeWebTest(WebTestCase):
             response = self.fetch(url)
             response.rethrow()
             data = json_decode(response.body)
-            self.assertEqual(data, {u'path': [u'unicode', u'\u00e9'],
-                                    u'query': [u'unicode', u'\u00e9'],
+            self.assertEqual(data, {u('path'): [u('unicode'), u('\u00e9')],
+                                    u('query'): [u('unicode'), u('\u00e9')],
                                     })
 
         response = self.fetch("/decode_arg/%C3%A9?foo=%C3%A9")
         response.rethrow()
         data = json_decode(response.body)
-        self.assertEqual(data, {u'path': [u'bytes', u'c3a9'],
-                                u'query': [u'bytes', u'c3a9'],
+        self.assertEqual(data, {u('path'): [u('bytes'), u('c3a9')],
+                                u('query'): [u('bytes'), u('c3a9')],
                                 })
 
     def test_reverse_url(self):
@@ -551,19 +557,19 @@ class WSGISafeWebTest(WebTestCase):
                          '/decode_arg/foo')
         self.assertEqual(self.app.reverse_url('decode_arg', 42),
                          '/decode_arg/42')
-        self.assertEqual(self.app.reverse_url('decode_arg', b('\xe9')),
+        self.assertEqual(self.app.reverse_url('decode_arg', b'\xe9'),
                          '/decode_arg/%E9')
-        self.assertEqual(self.app.reverse_url('decode_arg', u'\u00e9'),
+        self.assertEqual(self.app.reverse_url('decode_arg', u('\u00e9')),
                          '/decode_arg/%C3%A9')
 
     def test_uimodule_unescaped(self):
         response = self.fetch("/linkify")
         self.assertEqual(response.body,
-                         b("<a href=\"http://example.com\">http://example.com</a>"))
+                         b"<a href=\"http://example.com\">http://example.com</a>")
 
     def test_uimodule_resources(self):
         response = self.fetch("/uimodule_resources")
-        self.assertEqual(response.body, b("""\
+        self.assertEqual(response.body, b"""\
 <html><head><link href="/base.css" type="text/css" rel="stylesheet"/><link href="/foo.css" type="text/css" rel="stylesheet"/>
 <style type="text/css">
 .entry { margin-bottom: 1em; }
@@ -584,13 +590,13 @@ js_embed()
 //]]>
 </script>
 <script src="/analytics.js"/>
-</body></html>"""))
+</body></html>""")
 
     def test_optional_path(self):
         self.assertEqual(self.fetch_json("/optional_path/foo"),
-                         {u"path": u"foo"})
+                         {u("path"): u("foo")})
         self.assertEqual(self.fetch_json("/optional_path/"),
-                         {u"path": None})
+                         {u("path"): None})
 
     def test_multi_header(self):
         response = self.fetch("/multi_header")
@@ -607,16 +613,20 @@ js_embed()
 
     def test_header_injection(self):
         response = self.fetch("/header_injection")
-        self.assertEqual(response.body, b("ok"))
+        self.assertEqual(response.body, b"ok")
 
     def test_get_argument(self):
         response = self.fetch("/get_argument?foo=bar")
-        self.assertEqual(response.body, b("bar"))
+        self.assertEqual(response.body, b"bar")
         response = self.fetch("/get_argument?foo=")
-        self.assertEqual(response.body, b(""))
+        self.assertEqual(response.body, b"")
         response = self.fetch("/get_argument")
-        self.assertEqual(response.body, b("default"))
-wsgi_safe.append(WSGISafeWebTest)
+        self.assertEqual(response.body, b"default")
+
+    def test_no_gzip(self):
+        response = self.fetch('/get_argument')
+        self.assertNotIn('Accept-Encoding', response.headers.get('Vary', ''))
+        self.assertNotIn('gzip', response.headers.get('Content-Encoding', ''))
 
 
 class NonWSGIWebTests(WebTestCase):
@@ -626,13 +636,14 @@ class NonWSGIWebTests(WebTestCase):
                 ]
 
     def test_flow_control(self):
-        self.assertEqual(self.fetch("/flow_control").body, b("123"))
+        self.assertEqual(self.fetch("/flow_control").body, b"123")
 
     def test_empty_flush(self):
         response = self.fetch("/empty_flush")
-        self.assertEqual(response.body, b("ok"))
+        self.assertEqual(response.body, b"ok")
 
 
+@wsgi_safe
 class ErrorResponseTest(WebTestCase):
     def get_handlers(self):
         class DefaultHandler(RequestHandler):
@@ -686,39 +697,40 @@ class ErrorResponseTest(WebTestCase):
         with ExpectLog(app_log, "Uncaught exception"):
             response = self.fetch("/default")
             self.assertEqual(response.code, 500)
-            self.assertTrue(b("500: Internal Server Error") in response.body)
+            self.assertTrue(b"500: Internal Server Error" in response.body)
 
             response = self.fetch("/default?status=503")
             self.assertEqual(response.code, 503)
-            self.assertTrue(b("503: Service Unavailable") in response.body)
+            self.assertTrue(b"503: Service Unavailable" in response.body)
 
     def test_write_error(self):
         with ExpectLog(app_log, "Uncaught exception"):
             response = self.fetch("/write_error")
             self.assertEqual(response.code, 500)
-            self.assertEqual(b("Exception: ZeroDivisionError"), response.body)
+            self.assertEqual(b"Exception: ZeroDivisionError", response.body)
 
             response = self.fetch("/write_error?status=503")
             self.assertEqual(response.code, 503)
-            self.assertEqual(b("Status: 503"), response.body)
+            self.assertEqual(b"Status: 503", response.body)
 
     def test_get_error_html(self):
         with ExpectLog(app_log, "Uncaught exception"):
             response = self.fetch("/get_error_html")
             self.assertEqual(response.code, 500)
-            self.assertEqual(b("Exception: ZeroDivisionError"), response.body)
+            self.assertEqual(b"Exception: ZeroDivisionError", response.body)
 
             response = self.fetch("/get_error_html?status=503")
             self.assertEqual(response.code, 503)
-            self.assertEqual(b("Status: 503"), response.body)
+            self.assertEqual(b"Status: 503", response.body)
 
     def test_failed_write_error(self):
         with ExpectLog(app_log, "Uncaught exception"):
             response = self.fetch("/failed_write_error")
             self.assertEqual(response.code, 500)
-            self.assertEqual(b(""), response.body)
-wsgi_safe.append(ErrorResponseTest)
+            self.assertEqual(b"", response.body)
 
+
+@wsgi_safe
 class StaticFileTest(WebTestCase):
     def get_handlers(self):
         class StaticUrlHandler(RequestHandler):
@@ -762,14 +774,14 @@ class StaticFileTest(WebTestCase):
 
     def test_static_files(self):
         response = self.fetch('/robots.txt')
-        self.assertTrue(b("Disallow: /") in response.body)
+        self.assertTrue(b"Disallow: /" in response.body)
 
         response = self.fetch('/static/robots.txt')
-        self.assertTrue(b("Disallow: /") in response.body)
+        self.assertTrue(b"Disallow: /" in response.body)
 
     def test_static_url(self):
         response = self.fetch("/static_url/robots.txt")
-        self.assertEqual(response.body, b("/static/robots.txt?v=f71d2"))
+        self.assertEqual(response.body, b"/static/robots.txt?v=f71d2")
 
     def test_absolute_static_url(self):
         response = self.fetch("/abs_static_url/robots.txt")
@@ -785,15 +797,22 @@ class StaticFileTest(WebTestCase):
         response = self.fetch(path % int(include_host))
         self.assertEqual(response.body, utf8(str(True)))
 
-    def test_static_304(self):
+    def test_static_304_if_modified_since(self):
         response1 = self.fetch("/static/robots.txt")
         response2 = self.fetch("/static/robots.txt", headers={
-                'If-Modified-Since': response1.headers['Last-Modified']})
+            'If-Modified-Since': response1.headers['Last-Modified']})
         self.assertEqual(response2.code, 304)
         self.assertTrue('Content-Length' not in response2.headers)
         self.assertTrue('Last-Modified' not in response2.headers)
-wsgi_safe.append(StaticFileTest)
 
+    def test_static_304_if_none_match(self):
+        response1 = self.fetch("/static/robots.txt")
+        response2 = self.fetch("/static/robots.txt", headers={
+            'If-None-Match': response1.headers['Etag']})
+        self.assertEqual(response2.code, 304)
+
+
+@wsgi_safe
 class CustomStaticFileTest(WebTestCase):
     def get_handlers(self):
         class MyStaticFileHandler(StaticFileHandler):
@@ -832,15 +851,50 @@ class CustomStaticFileTest(WebTestCase):
 
     def test_serve(self):
         response = self.fetch("/static/foo.42.txt")
-        self.assertEqual(response.body, b("bar"))
+        self.assertEqual(response.body, b"bar")
 
     def test_static_url(self):
         with ExpectLog(gen_log, "Could not open static file", required=False):
             response = self.fetch("/static_url/foo.txt")
-            self.assertEqual(response.body, b("/static/foo.42.txt"))
-wsgi_safe.append(CustomStaticFileTest)
+            self.assertEqual(response.body, b"/static/foo.42.txt")
 
 
+@wsgi_safe
+class HostMatchingTest(WebTestCase):
+    class Handler(RequestHandler):
+        def initialize(self, reply):
+            self.reply = reply
+
+        def get(self):
+            self.write(self.reply)
+
+    def get_handlers(self):
+        return [("/foo", HostMatchingTest.Handler, {"reply": "wildcard"})]
+
+    def test_host_matching(self):
+        self.app.add_handlers("www.example.com",
+                              [("/foo", HostMatchingTest.Handler, {"reply": "[0]"})])
+        self.app.add_handlers(r"www\.example\.com",
+                              [("/bar", HostMatchingTest.Handler, {"reply": "[1]"})])
+        self.app.add_handlers("www.example.com",
+                              [("/baz", HostMatchingTest.Handler, {"reply": "[2]"})])
+
+        response = self.fetch("/foo")
+        self.assertEqual(response.body, b"wildcard")
+        response = self.fetch("/bar")
+        self.assertEqual(response.code, 404)
+        response = self.fetch("/baz")
+        self.assertEqual(response.code, 404)
+
+        response = self.fetch("/foo", headers={'Host': 'www.example.com'})
+        self.assertEqual(response.body, b"[0]")
+        response = self.fetch("/bar", headers={'Host': 'www.example.com'})
+        self.assertEqual(response.body, b"[1]")
+        response = self.fetch("/baz", headers={'Host': 'www.example.com'})
+        self.assertEqual(response.body, b"[2]")
+
+
+@wsgi_safe
 class NamedURLSpecGroupsTest(WebTestCase):
     def get_handlers(self):
         class EchoHandler(RequestHandler):
@@ -848,17 +902,17 @@ class NamedURLSpecGroupsTest(WebTestCase):
                 self.write(path)
 
         return [("/str/(?P<path>.*)", EchoHandler),
-                (u"/unicode/(?P<path>.*)", EchoHandler)]
+                (u("/unicode/(?P<path>.*)"), EchoHandler)]
 
     def test_named_urlspec_groups(self):
         response = self.fetch("/str/foo")
-        self.assertEqual(response.body, b("foo"))
+        self.assertEqual(response.body, b"foo")
 
         response = self.fetch("/unicode/bar")
-        self.assertEqual(response.body, b("bar"))
-wsgi_safe.append(NamedURLSpecGroupsTest)
+        self.assertEqual(response.body, b"bar")
 
 
+@wsgi_safe
 class ClearHeaderTest(SimpleHandlerTestCase):
     class Handler(RequestHandler):
         def get(self):
@@ -871,8 +925,9 @@ class ClearHeaderTest(SimpleHandlerTestCase):
         response = self.fetch("/")
         self.assertTrue("h1" not in response.headers)
         self.assertEqual(response.headers["h2"], "bar")
-wsgi_safe.append(ClearHeaderTest)
 
+
+@wsgi_safe
 class Header304Test(SimpleHandlerTestCase):
     class Handler(RequestHandler):
         def get(self):
@@ -885,15 +940,15 @@ class Header304Test(SimpleHandlerTestCase):
         self.assertEqual(response1.headers["Content-Language"], "en_US")
 
         response2 = self.fetch('/', headers={
-                'If-None-Match': response1.headers["Etag"]})
+            'If-None-Match': response1.headers["Etag"]})
         self.assertEqual(response2.code, 304)
         self.assertTrue("Content-Length" not in response2.headers)
         self.assertTrue("Content-Language" not in response2.headers)
         # Not an entity header, but should not be added to 304s by chunking
         self.assertTrue("Transfer-Encoding" not in response2.headers)
-wsgi_safe.append(Header304Test)
 
 
+@wsgi_safe
 class StatusReasonTest(SimpleHandlerTestCase):
     class Handler(RequestHandler):
         def get(self):
@@ -918,9 +973,9 @@ class StatusReasonTest(SimpleHandlerTestCase):
         with ExpectLog(app_log, 'Uncaught exception'):
             response = self.fetch("/?code=682")
         self.assertEqual(response.code, 500)
-wsgi_safe.append(StatusReasonTest)
 
 
+@wsgi_safe
 class DateHeaderTest(SimpleHandlerTestCase):
     class Handler(RequestHandler):
         def get(self):
@@ -932,9 +987,9 @@ class DateHeaderTest(SimpleHandlerTestCase):
                                                  "%a, %d %b %Y %H:%M:%S GMT")
         self.assertTrue(header_date - datetime.datetime.utcnow() <
                         datetime.timedelta(seconds=2))
-wsgi_safe.append(DateHeaderTest)
 
 
+@wsgi_safe
 class RaiseWithReasonTest(SimpleHandlerTestCase):
     class Handler(RequestHandler):
         def get(self):
@@ -948,8 +1003,94 @@ class RaiseWithReasonTest(SimpleHandlerTestCase):
         response = self.fetch("/")
         self.assertEqual(response.code, 682)
         self.assertEqual(response.reason, "Foo")
-        self.assertIn(b('682: Foo'), response.body)
+        self.assertIn(b'682: Foo', response.body)
 
     def test_httperror_str(self):
         self.assertEqual(str(HTTPError(682, reason="Foo")), "HTTP 682: Foo")
-wsgi_safe.append(RaiseWithReasonTest)
+
+
+@wsgi_safe
+class ErrorHandlerXSRFTest(WebTestCase):
+    def get_handlers(self):
+        # note that if the handlers list is empty we get the default_host
+        # redirect fallback instead of a 404, so test with both an
+        # explicitly defined error handler and an implicit 404.
+        return [('/error', ErrorHandler, dict(status_code=417))]
+
+    def get_app_kwargs(self):
+        return dict(xsrf_cookies=True)
+
+    def test_error_xsrf(self):
+        response = self.fetch('/error', method='POST', body='')
+        self.assertEqual(response.code, 417)
+
+    def test_404_xsrf(self):
+        response = self.fetch('/404', method='POST', body='')
+        self.assertEqual(response.code, 404)
+
+
+class GzipTestCase(SimpleHandlerTestCase):
+    class Handler(RequestHandler):
+        def get(self):
+            if self.get_argument('vary', None):
+                self.set_header('Vary', self.get_argument('vary'))
+            self.write('hello world')
+
+    def get_app_kwargs(self):
+        return dict(gzip=True)
+
+    def test_gzip(self):
+        response = self.fetch('/')
+        self.assertEqual(response.headers['Content-Encoding'], 'gzip')
+        self.assertEqual(response.headers['Vary'], 'Accept-Encoding')
+
+    def test_gzip_not_requested(self):
+        response = self.fetch('/', use_gzip=False)
+        self.assertNotIn('Content-Encoding', response.headers)
+        self.assertEqual(response.headers['Vary'], 'Accept-Encoding')
+
+    def test_vary_already_present(self):
+        response = self.fetch('/?vary=Accept-Language')
+        self.assertEqual(response.headers['Vary'],
+                         'Accept-Language, Accept-Encoding')
+
+
+@wsgi_safe
+class PathArgsInPrepareTest(WebTestCase):
+    class Handler(RequestHandler):
+        def prepare(self):
+            self.write(dict(args=self.path_args, kwargs=self.path_kwargs))
+
+        def get(self, path):
+            assert path == 'foo'
+            self.finish()
+
+    def get_handlers(self):
+        return [('/pos/(.*)', self.Handler),
+                ('/kw/(?P<path>.*)', self.Handler)]
+
+    def test_pos(self):
+        response = self.fetch('/pos/foo')
+        response.rethrow()
+        data = json_decode(response.body)
+        self.assertEqual(data, {'args': ['foo'], 'kwargs': {}})
+
+    def test_kw(self):
+        response = self.fetch('/kw/foo')
+        response.rethrow()
+        data = json_decode(response.body)
+        self.assertEqual(data, {'args': [], 'kwargs': {'path': 'foo'}})
+
+
+@wsgi_safe
+class ClearAllCookiesTest(SimpleHandlerTestCase):
+    class Handler(RequestHandler):
+        def get(self):
+            self.clear_all_cookies()
+            self.write('ok')
+
+    def test_clear_all_cookies(self):
+        response = self.fetch('/', headers={'Cookie': 'foo=bar; baz=xyzzy'})
+        set_cookies = sorted(response.headers.get_list('Set-Cookie'))
+        self.assertTrue(set_cookies[0].startswith('baz=;'))
+        self.assertTrue(set_cookies[1].startswith('foo=;'))

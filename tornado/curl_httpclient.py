@@ -16,7 +16,7 @@
 
 """Blocking and non-blocking HTTP client implementations using pycurl."""
 
-from __future__ import absolute_import, division, with_statement
+from __future__ import absolute_import, division, print_function, with_statement
 
 import cStringIO
 import collections
@@ -31,12 +31,15 @@ from tornado.log import gen_log
 from tornado import stack_context
 
 from tornado.escape import utf8
-from tornado.httpclient import HTTPRequest, HTTPResponse, HTTPError, AsyncHTTPClient, main
+from tornado.httpclient import HTTPRequest, HTTPResponse, HTTPError, AsyncHTTPClient, main, _RequestProxy
 
 
 class CurlAsyncHTTPClient(AsyncHTTPClient):
-    def initialize(self, io_loop=None, max_clients=10):
+    def initialize(self, io_loop=None, max_clients=10, defaults=None):
         self.io_loop = io_loop
+        self.defaults = dict(HTTPRequest._DEFAULTS)
+        if defaults is not None:
+            self.defaults.update(defaults)
         self._multi = pycurl.CurlMulti()
         self._multi.setopt(pycurl.M_TIMERFUNCTION, self._set_timeout)
         self._multi.setopt(pycurl.M_SOCKETFUNCTION, self._handle_socket)
@@ -77,6 +80,7 @@ class CurlAsyncHTTPClient(AsyncHTTPClient):
     def fetch(self, request, callback, **kwargs):
         if not isinstance(request, HTTPRequest):
             request = HTTPRequest(url=request, **kwargs)
+        request = _RequestProxy(request, self.defaults)
         self._requests.append((request, stack_context.wrap(callback)))
         self._process_queue()
         self._set_timeout(0)
@@ -92,17 +96,18 @@ class CurlAsyncHTTPClient(AsyncHTTPClient):
             pycurl.POLL_INOUT: ioloop.IOLoop.READ | ioloop.IOLoop.WRITE
         }
         if event == pycurl.POLL_REMOVE:
-            self.io_loop.remove_handler(fd)
-            del self._fds[fd]
+            if fd in self._fds:
+                self.io_loop.remove_handler(fd)
+                del self._fds[fd]
         else:
             ioloop_event = event_map[event]
             if fd not in self._fds:
-                self._fds[fd] = ioloop_event
                 self.io_loop.add_handler(fd, self._handle_events,
                                          ioloop_event)
-            else:
                 self._fds[fd] = ioloop_event
+            else:
                 self.io_loop.update_handler(fd, ioloop_event)
+                self._fds[fd] = ioloop_event
 
     def _set_timeout(self, msecs):
         """Called by libcurl to schedule a timeout."""
@@ -123,7 +128,7 @@ class CurlAsyncHTTPClient(AsyncHTTPClient):
         while True:
             try:
                 ret, num_handles = self._socket_action(fd, action)
-            except pycurl.error, e:
+            except pycurl.error as e:
                 ret = e.args[0]
             if ret != pycurl.E_CALL_MULTI_PERFORM:
                 break
@@ -137,7 +142,7 @@ class CurlAsyncHTTPClient(AsyncHTTPClient):
                 try:
                     ret, num_handles = self._socket_action(
                         pycurl.SOCKET_TIMEOUT, 0)
-                except pycurl.error, e:
+                except pycurl.error as e:
                     ret = e.args[0]
                 if ret != pycurl.E_CALL_MULTI_PERFORM:
                     break
@@ -168,7 +173,7 @@ class CurlAsyncHTTPClient(AsyncHTTPClient):
             while True:
                 try:
                     ret, num_handles = self._multi.socket_all()
-                except pycurl.error, e:
+                except pycurl.error as e:
                     ret = e.args[0]
                 if ret != pycurl.E_CALL_MULTI_PERFORM:
                     break
@@ -242,7 +247,7 @@ class CurlAsyncHTTPClient(AsyncHTTPClient):
             starttransfer=curl.getinfo(pycurl.STARTTRANSFER_TIME),
             total=curl.getinfo(pycurl.TOTAL_TIME),
             redirect=curl.getinfo(pycurl.REDIRECT_TIME),
-            )
+        )
         try:
             info["callback"](HTTPResponse(
                 request=info["request"], code=code, headers=info["headers"],
@@ -294,7 +299,7 @@ def _curl_setup_request(curl, request, buffer, headers):
                     [utf8("%s: %s" % i) for i in request.headers.get_all()])
     else:
         curl.setopt(pycurl.HTTPHEADER,
-                    [utf8("%s: %s" % i) for i in request.headers.iteritems()])
+                    [utf8("%s: %s" % i) for i in request.headers.items()])
 
     if request.header_callback:
         curl.setopt(pycurl.HEADERFUNCTION, request.header_callback)
@@ -324,7 +329,7 @@ def _curl_setup_request(curl, request, buffer, headers):
         curl.setopt(pycurl.PROXYPORT, request.proxy_port)
         if request.proxy_username:
             credentials = '%s:%s' % (request.proxy_username,
-                    request.proxy_password)
+                                     request.proxy_password)
             curl.setopt(pycurl.PROXYUSERPWD, credentials)
     else:
         curl.setopt(pycurl.PROXY, '')

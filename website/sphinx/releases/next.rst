@@ -4,8 +4,7 @@ What's new in the next release of Tornado
 In progress
 -----------
 
-* The Tornado test suite now requires ``unittest2`` when run on Python 2.5
-  or 2.6.
+* The Tornado test suite now requires ``unittest2`` when run on Python 2.6.
 * `tornado.testing.AsyncTestCase` and friends now extend ``unittest2.TestCase``
   when it is available (and continue to use the standard ``unittest`` module
   when ``unittest2`` is not available)
@@ -16,7 +15,7 @@ In progress
 * Tornado no longer logs to the root logger.  Details on the new logging
   scheme can be found under the `tornado.log` module.  Note that in some
   cases this will require that you add an explicit logging configuration
-  in ordre to see any output (perhaps just calling ``logging.basicConfig()``),
+  in order to see any output (perhaps just calling ``logging.basicConfig()``),
   although both `IOLoop.start()` and `tornado.options.parse_command_line`
   will do this for you.
 * Errors while rendering templates no longer log the generated code,
@@ -156,3 +155,71 @@ In progress
   response code the same as a 303.  This is contrary to the HTTP spec
   but consistent with all browsers and other major HTTP clients
   (including `CurlAsyncHTTPClient`).
+* The `tornado.auth` mixin classes now define a method
+  ``get_auth_http_client``, which can be overridden to use a non-default
+  `AsyncHTTPClient` instance (e.g. to use a different `IOLoop`)
+* ``Etag``/``If-None-Match`` requests now work with `StaticFileHandler`.
+* `StaticFileHandler` no longer sets ``Cache-Control: public`` unnecessarily.
+* The behavior of ``header_callback`` with `SimpleAsyncHTTPClient` has
+  changed and is now the same as that of `CurlAsyncHTTPClient`.  The
+  header callback now receives the first line of the response (e.g.
+  ``HTTP/1.0 200 OK``) and the final empty line.
+* Secondary `AsyncHTTPClient` callbacks (``streaming_callback``,
+  ``header_callback``, and ``prepare_curl_callback``) now respect
+  `StackContext`.
+* `AsyncHTTPClient.configure` and all `AsyncHTTPClient` constructors
+  now take a ``defaults`` keyword argument.  This argument should be a
+  dictionary, and its values will be used in place of corresponding
+  attributes of `HTTPRequest` that are not set.
+* All unset attributes of `tornado.httpclient.HTTPRequest` are now ``None``.
+  The default values of some attributes (``connect_timeout``,
+  ``request_timeout``, ``follow_redirects``, ``max_redirects``,
+  ``use_gzip``, ``proxy_password``, ``allow_nonstandard_methods``,
+  and ``validate_cert`` have been moved from `HTTPRequest` to the
+  client implementations.
+* `simple_httpclient` now accepts responses with a 304 status code that
+  include a ``Content-Length`` header.
+* `HTTPServer` now takes a ``protocol`` keyword argument which can be set
+  to ``https`` if the server is behind an SSL-decoding proxy that does not
+  set any supported X-headers.
+* `tornado.web.ErrorHandler` no longer requires XSRF tokens on ``POST``
+  requests, so posts to an unknown url will always return 404 instead of
+  complaining about XSRF tokens.
+* `tornado.options.options` (and `OptionParser` instances generally) now
+  have a `mockable()` method that returns a wrapper object compatible with
+  `mock.patch`.
+* `tornado.web.RequestHandler` has new attributes ``path_args`` and
+  ``path_kwargs``, which contain the positional and keyword arguments
+  that are passed to the ``get``/``post``/etc method.  These attributes
+  are set before those methods are called, so they are available during
+  ``prepare()``
+* `IOLoop.add_callback` and `add_callback_from_signal` now take
+  ``*args, **kwargs`` to pass along to the callback.
+* When gzip is enabled in a `tornado.web.Application`, appropriate
+  ``Vary: Accept-Encoding`` headers are now sent.
+* Fixed a bug in which `SimpleAsyncHTTPClient` callbacks were being run in the
+  client's ``stack_context``.
+* It is no longer necessary to pass all handlers for a host in a single
+  `Application.add_handlers` call.  Now the request will be matched
+  against the handlers for any ``host_pattern`` that includes the request's
+  ``Host`` header.
+* `IOStream.error` no longer picks up unrelated exceptions.
+* `IOStream.close` now has an ``exc_info`` argument (similar to the
+  one used in the `logging` module) that can be used to set the stream's
+  ``error`` attribute when closing it.
+* Python 2.5 is no longer supported.
+* Installation under Python 3 no longer uses ``2to3``.
+* `tornado.util.b` (which was only intended for internal use) is gone.
+* Fixed a memory leak involving ``gen.engine``, `RequestHandler.flush`,
+  and clients closing connections while output is being written.
+* `tornado.httpserver.HTTPConnection` now has a `set_close_callback`
+  method that should be used instead of reaching into its ``stream``
+  attribute.
+* `tornado.netutil.TCPServer` has moved to its own module, `tornado.tcpserver`.
+* On python 3.2+, methods that take an ``ssl_options`` argument (on
+  `SSLIOStream`, `TCPServer`, and `HTTPServer`) now accept either a
+  dictionary of options or an `ssl.SSLContext` object.
+* `IOStream.connect` now has an optional ``server_hostname`` argument
+  which will be used for SSL certificate validation when applicable.
+  Additionally, when supported (on Python 3.2+), this hostname
+  will be sent via SNI (and this is supported by `tornado.simple_httpclient`)

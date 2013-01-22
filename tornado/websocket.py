@@ -17,7 +17,7 @@ communication between the browser and server.
    documentation for caveats).
 """
 
-from __future__ import absolute_import, division, with_statement
+from __future__ import absolute_import, division, print_function, with_statement
 # Author: Jacob Kristhammar, 2010
 
 import array
@@ -30,7 +30,7 @@ import tornado.escape
 import tornado.web
 
 from tornado.log import gen_log, app_log
-from tornado.util import bytes_type, b
+from tornado.util import bytes_type
 
 
 class WebSocketHandler(tornado.web.RequestHandler):
@@ -325,12 +325,12 @@ class WebSocketProtocol76(WebSocketProtocol):
             "Sec-WebSocket-Location: %(scheme)s://%(host)s%(uri)s\r\n"
             "%(subprotocol)s"
             "\r\n" % (dict(
-                    version=tornado.version,
-                    origin=self.request.headers["Origin"],
-                    scheme=scheme,
-                    host=self.request.host,
-                    uri=self.request.uri,
-                    subprotocol=subprotocol_header))))
+            version=tornado.version,
+            origin=self.request.headers["Origin"],
+            scheme=scheme,
+            host=self.request.host,
+            uri=self.request.uri,
+            subprotocol=subprotocol_header))))
         self.stream.read_bytes(8, self._handle_challenge)
 
     def challenge_response(self, challenge):
@@ -398,7 +398,7 @@ class WebSocketProtocol76(WebSocketProtocol):
     def _on_frame_type(self, byte):
         frame_type = ord(byte)
         if frame_type == 0x00:
-            self.stream.read_until(b("\xff"), self._on_end_delimiter)
+            self.stream.read_until(b"\xff", self._on_end_delimiter)
         elif frame_type == 0xff:
             self.stream.read_bytes(1, self._on_length_indicator)
         else:
@@ -407,7 +407,7 @@ class WebSocketProtocol76(WebSocketProtocol):
     def _on_end_delimiter(self, frame):
         if not self.client_terminated:
             self.async_callback(self.handler.on_message)(
-                    frame[:-1].decode("utf-8", "replace"))
+                frame[:-1].decode("utf-8", "replace"))
         if not self.client_terminated:
             self._receive_message()
 
@@ -426,7 +426,7 @@ class WebSocketProtocol76(WebSocketProtocol):
         if isinstance(message, unicode):
             message = message.encode("utf-8")
         assert isinstance(message, bytes_type)
-        self.stream.write(b("\x00") + message + b("\xff"))
+        self.stream.write(b"\x00" + message + b"\xff")
 
     def write_ping(self, data):
         """Send ping frame."""
@@ -486,8 +486,8 @@ class WebSocketProtocol13(WebSocketProtocol):
     def _challenge_response(self):
         sha1 = hashlib.sha1()
         sha1.update(tornado.escape.utf8(
-                self.request.headers.get("Sec-Websocket-Key")))
-        sha1.update(b("258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))  # Magic value
+            self.request.headers.get("Sec-Websocket-Key")))
+        sha1.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11")  # Magic value
         return tornado.escape.native_str(base64.b64encode(sha1.digest()))
 
     def _accept_connection(self):
@@ -657,7 +657,7 @@ class WebSocketProtocol13(WebSocketProtocol):
         """Closes the WebSocket connection."""
         if not self.server_terminated:
             if not self.stream.closed():
-                self._write_frame(True, 0x8, b(""))
+                self._write_frame(True, 0x8, b"")
             self.server_terminated = True
         if self.client_terminated:
             if self._waiting is not None:

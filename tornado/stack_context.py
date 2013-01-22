@@ -66,7 +66,7 @@ Here are a few rules of thumb for when it's necessary:
   block that references your `StackContext`.
 '''
 
-from __future__ import absolute_import, division, with_statement
+from __future__ import absolute_import, division, print_function, with_statement
 
 import contextlib
 import functools
@@ -160,6 +160,7 @@ class ExceptionStackContext(object):
                 return self.exception_handler(type, value, traceback)
         finally:
             _state.contexts = self.old_contexts
+            self.old_contexts = None
 
 
 class NullContext(object):

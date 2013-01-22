@@ -1,4 +1,4 @@
-from __future__ import absolute_import, division, with_statement
+from __future__ import absolute_import, division, print_function, with_statement
 
 import socket
 
@@ -10,6 +10,7 @@ try:
     from concurrent import futures
 except ImportError:
     futures = None
+
 
 class _ResolverTestMixin(object):
     def test_localhost(self):
@@ -28,6 +29,8 @@ class SyncResolverTest(AsyncTestCase, _ResolverTestMixin):
         super(SyncResolverTest, self).setUp()
         self.resolver = Resolver(self.io_loop)
 
+
+@unittest.skipIf(futures is None, "futures module not present")
 class ThreadedResolverTest(AsyncTestCase, _ResolverTestMixin):
     def setUp(self):
         super(ThreadedResolverTest, self).setUp()
@@ -38,5 +41,3 @@ class ThreadedResolverTest(AsyncTestCase, _ResolverTestMixin):
     def tearDown(self):
         self.executor.shutdown()
         super(ThreadedResolverTest, self).tearDown()
-ThreadedResolverTest = unittest.skipIf(
-    futures is None, "futures module not present")(ThreadedResolverTest)

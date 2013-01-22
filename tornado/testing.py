@@ -18,9 +18,8 @@ inheritance.  See the docstrings for each class/function below for more
 information.
 """
 
-from __future__ import absolute_import, division, with_statement
+from __future__ import absolute_import, division, print_function, with_statement
 
-from cStringIO import StringIO
 try:
     from tornado.httpclient import AsyncHTTPClient
     from tornado.httpserver import HTTPServer
@@ -36,16 +35,19 @@ except ImportError:
     netutil = None
     SimpleAsyncHTTPClient = None
 from tornado.log import gen_log
-from tornado.stack_context import StackContext
-from tornado.util import raise_exc_info
-import contextlib
+from tornado.stack_context import ExceptionStackContext
+from tornado.util import raise_exc_info, basestring_type
 import logging
 import os
 import re
 import signal
 import socket
 import sys
-import time
+
+try:
+    from io import StringIO  # py3
+except ImportError:
+    from cStringIO import StringIO  # py2
 
 # Tornado's own test suite requires the updated unittest module
 # (either py27+ or unittest2) so tornado.test.util enforces
@@ -152,7 +154,7 @@ class AsyncTestCase(unittest.TestCase):
     def tearDown(self):
         self.io_loop.clear_current()
         if (not IOLoop.initialized() or
-            self.io_loop is not IOLoop.instance()):
+                self.io_loop is not IOLoop.instance()):
             # Try to clean up any file descriptors left open in the ioloop.
             # This avoids leaks, especially when tests are run repeatedly
             # in the same process with autoreload (because curl does not
@@ -167,13 +169,10 @@ class AsyncTestCase(unittest.TestCase):
         '''
         return IOLoop()
 
-    @contextlib.contextmanager
-    def _stack_context(self):
-        try:
-            yield
-        except Exception:
-            self.__failure = sys.exc_info()
-            self.stop()
+    def _handle_exception(self, typ, value, tb):
+        self.__failure = sys.exc_info()
+        self.stop()
+        return True
 
     def __rethrow(self):
         if self.__failure is not None:
@@ -182,7 +181,7 @@ class AsyncTestCase(unittest.TestCase):
             raise_exc_info(failure)
 
     def run(self, result=None):
-        with StackContext(self._stack_context):
+        with ExceptionStackContext(self._handle_exception):
             super(AsyncTestCase, self).run(result)
         # In case an exception escaped super.run or the StackContext caught
         # an exception when there wasn't a wait() to re-raise it, do so here.
@@ -215,8 +214,8 @@ class AsyncTestCase(unittest.TestCase):
                 def timeout_func():
                     try:
                         raise self.failureException(
-                          'Async operation timed out after %s seconds' %
-                          timeout)
+                            'Async operation timed out after %s seconds' %
+                            timeout)
                     except Exception:
                         self.__failure = sys.exc_info()
                     self.stop()
@@ -227,7 +226,7 @@ class AsyncTestCase(unittest.TestCase):
                 self.__running = True
                 self.io_loop.start()
                 if (self.__failure is not None or
-                    condition is None or condition()):
+                        condition is None or condition()):
                     break
         assert self.__stopped
         self.__stopped = False
@@ -318,7 +317,7 @@ class AsyncHTTPTestCase(AsyncTestCase):
     def tearDown(self):
         self.http_server.stop()
         if (not IOLoop.initialized() or
-            self.http_client.io_loop is not IOLoop.instance()):
+                self.http_client.io_loop is not IOLoop.instance()):
             self.http_client.close()
         super(AsyncHTTPTestCase, self).tearDown()
 
@@ -331,7 +330,8 @@ class AsyncHTTPSTestCase(AsyncHTTPTestCase):
     def get_http_client(self):
         # Some versions of libcurl have deadlock bugs with ssl,
         # so always run these tests with SimpleAsyncHTTPClient.
-        return SimpleAsyncHTTPClient(io_loop=self.io_loop, force_instance=True)
+        return SimpleAsyncHTTPClient(io_loop=self.io_loop, force_instance=True,
+                                     defaults=dict(validate_cert=False))
 
     def get_httpserver_options(self):
         return dict(ssl_options=self.get_ssl_options())
@@ -345,15 +345,11 @@ class AsyncHTTPSTestCase(AsyncHTTPTestCase):
         # openssl req -new -keyout tornado/test/test.key -out tornado/test/test.crt -nodes -days 3650 -x509
         module_dir = os.path.dirname(__file__)
         return dict(
-                certfile=os.path.join(module_dir, 'test', 'test.crt'),
-                keyfile=os.path.join(module_dir, 'test', 'test.key'))
+            certfile=os.path.join(module_dir, 'test', 'test.crt'),
+            keyfile=os.path.join(module_dir, 'test', 'test.key'))
 
     def get_protocol(self):
         return 'https'
-
-    def fetch(self, path, **kwargs):
-        return AsyncHTTPTestCase.fetch(self, path, validate_cert=False,
-                   **kwargs)
 
 
 class LogTrapTestCase(unittest.TestCase):
@@ -417,7 +413,7 @@ class ExpectLog(logging.Filter):
         :param required: If true, an exeption will be raised if the end of
             the ``with`` statement is reached without matching any log entries.
         """
-        if isinstance(logger, basestring):
+        if isinstance(logger, basestring_type):
             logger = logging.getLogger(logger)
         self.logger = logger
         self.regex = re.compile(regex)
@@ -503,7 +499,7 @@ def main(**kwargs):
         kwargs['buffer'] = True
 
     if __name__ == '__main__' and len(argv) == 1:
-        print >> sys.stderr, "No tests specified"
+        print("No tests specified", file=sys.stderr)
         sys.exit(1)
     try:
         # In order to be able to run tests by their fully-qualified name
@@ -516,7 +512,7 @@ def main(**kwargs):
             unittest.main(module=None, argv=argv, **kwargs)
         else:
             unittest.main(defaultTest="all", argv=argv, **kwargs)
-    except SystemExit, e:
+    except SystemExit as e:
         if e.code == 0:
             gen_log.info('PASS')
         else:

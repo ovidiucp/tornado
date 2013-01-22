@@ -1,4 +1,4 @@
-from __future__ import absolute_import, division, with_statement
+from __future__ import absolute_import, division, print_function, with_statement
 
 import collections
 from contextlib import closing
@@ -19,7 +19,6 @@ from tornado.test.httpclient_test import ChunkHandler, CountdownHandler, HelloWo
 from tornado.test import httpclient_test
 from tornado.testing import AsyncHTTPTestCase, AsyncTestCase, bind_unused_port, ExpectLog
 from tornado.test.util import unittest
-from tornado.util import b
 from tornado.web import RequestHandler, Application, asynchronous, url
 
 
@@ -116,7 +115,7 @@ class SimpleHTTPClientTestCase(AsyncHTTPTestCase):
             url("/see_other_post", SeeOtherPostHandler),
             url("/see_other_get", SeeOtherGetHandler),
             url("/host_echo", HostEchoHandler),
-            ], gzip=True)
+        ], gzip=True)
 
     def test_singleton(self):
         # Class "constructor" reuses objects on the same IOLoop
@@ -179,11 +178,11 @@ class SimpleHTTPClientTestCase(AsyncHTTPTestCase):
         response = self.fetch("/chunk", use_gzip=False,
                               headers={"Accept-Encoding": "gzip"})
         self.assertEqual(response.headers["Content-Encoding"], "gzip")
-        self.assertNotEqual(response.body, b("asdfqwer"))
+        self.assertNotEqual(response.body, b"asdfqwer")
         # Our test data gets bigger when gzipped.  Oops.  :)
         self.assertEqual(len(response.body), 34)
         f = gzip.GzipFile(mode="r", fileobj=response.buffer)
-        self.assertEqual(f.read(), b("asdfqwer"))
+        self.assertEqual(f.read(), b"asdfqwer")
 
     def test_max_redirects(self):
         response = self.fetch("/countdown/5", max_redirects=3)
@@ -207,7 +206,7 @@ class SimpleHTTPClientTestCase(AsyncHTTPTestCase):
             self.assertEqual(200, response.code)
             self.assertTrue(response.request.url.endswith("/see_other_post"))
             self.assertTrue(response.effective_url.endswith("/see_other_get"))
-            #request is the original request, is a POST still
+            # request is the original request, is a POST still
             self.assertEqual("POST", response.request.method)
 
     def test_request_timeout(self):
@@ -223,7 +222,7 @@ class SimpleHTTPClientTestCase(AsyncHTTPTestCase):
     def test_ipv6(self):
         try:
             self.http_server.listen(self.get_http_port(), address='::1')
-        except socket.gaierror, e:
+        except socket.gaierror as e:
             if e.args[0] == socket.EAI_ADDRFAMILY:
                 # python supports ipv6, but it's not configured on the network
                 # interface, so skip this test.
@@ -239,13 +238,13 @@ class SimpleHTTPClientTestCase(AsyncHTTPTestCase):
 
         self.http_client.fetch(url, self.stop, allow_ipv6=True)
         response = self.wait()
-        self.assertEqual(response.body, b("Hello world!"))
+        self.assertEqual(response.body, b"Hello world!")
 
     def test_multiple_content_length_accepted(self):
         response = self.fetch("/content_length?value=2,2")
-        self.assertEqual(response.body, b("ok"))
+        self.assertEqual(response.body, b"ok")
         response = self.fetch("/content_length?value=2,%202,2")
-        self.assertEqual(response.body, b("ok"))
+        self.assertEqual(response.body, b"ok")
 
         with ExpectLog(gen_log, "uncaught exception"):
             response = self.fetch("/content_length?value=2,4")
@@ -264,7 +263,7 @@ class SimpleHTTPClientTestCase(AsyncHTTPTestCase):
         self.assertEqual(response.code, 200)
         self.assertEqual(response.headers["content-length"], "2")
         self.assertEqual(response.headers["access-control-allow-origin"], "*")
-        self.assertEqual(response.body, b("ok"))
+        self.assertEqual(response.body, b"ok")
 
     def test_no_content(self):
         response = self.fetch("/no_content")
@@ -279,7 +278,7 @@ class SimpleHTTPClientTestCase(AsyncHTTPTestCase):
             self.assertEqual(response.code, 599)
 
     def test_host_header(self):
-        host_re = re.compile(b("^localhost:[0-9]+$"))
+        host_re = re.compile(b"^localhost:[0-9]+$")
         response = self.fetch("/host_echo")
         self.assertTrue(host_re.match(response.body))
 
@@ -343,12 +342,12 @@ class HTTP100ContinueTestCase(AsyncHTTPTestCase):
     def respond_100(self, request):
         self.request = request
         self.request.connection.stream.write(
-            b("HTTP/1.1 100 CONTINUE\r\n\r\n"),
+            b"HTTP/1.1 100 CONTINUE\r\n\r\n",
             self.respond_200)
 
     def respond_200(self):
         self.request.connection.stream.write(
-            b("HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nA"),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nA",
             self.request.connection.stream.close)
 
     def get_app(self):
@@ -357,4 +356,4 @@ class HTTP100ContinueTestCase(AsyncHTTPTestCase):
 
     def test_100_continue(self):
         res = self.fetch('/')
-        self.assertEqual(res.body, b('A'))
+        self.assertEqual(res.body, b'A')
