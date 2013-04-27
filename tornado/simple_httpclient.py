@@ -2,10 +2,10 @@
 from __future__ import absolute_import, division, print_function, with_statement
 
 from tornado.escape import utf8, _unicode, native_str
-from tornado.httpclient import HTTPRequest, HTTPResponse, HTTPError, AsyncHTTPClient, main, _RequestProxy
+from tornado.httpclient import HTTPResponse, HTTPError, AsyncHTTPClient, main, _RequestProxy
 from tornado.httputil import HTTPHeaders
 from tornado.iostream import IOStream, SSLIOStream
-from tornado.netutil import Resolver
+from tornado.netutil import Resolver, OverrideResolver
 from tornado.log import gen_log
 from tornado import stack_context
 from tornado.util import GzipDecompressor
@@ -68,27 +68,19 @@ class SimpleAsyncHTTPClient(AsyncHTTPClient):
         max_buffer_size is the number of bytes that can be read by IOStream. It
         defaults to 100mb.
         """
-        self.io_loop = io_loop
+        super(SimpleAsyncHTTPClient, self).initialize(io_loop,
+                                                      defaults=defaults)
         self.max_clients = max_clients
         self.queue = collections.deque()
         self.active = {}
-        self.hostname_mapping = hostname_mapping
         self.max_buffer_size = max_buffer_size
         self.ca_certs = ca_certs
         self.resolver = resolver or Resolver(io_loop=io_loop)
-        self.defaults = dict(HTTPRequest._DEFAULTS)
-        if defaults is not None:
-            self.defaults.update(defaults)
+        if hostname_mapping is not None:
+            self.resolver = OverrideResolver(resolver=self.resolver,
+                                             mapping=hostname_mapping)
 
-    def fetch(self, request, callback, **kwargs):
-        if not isinstance(request, HTTPRequest):
-            request = HTTPRequest(url=request, **kwargs)
-        # We're going to modify this (to add Host, Accept-Encoding, etc),
-        # so make sure we don't modify the caller's object.  This is also
-        # where normal dicts get converted to HTTPHeaders objects.
-        request.headers = HTTPHeaders(request.headers)
-        request = _RequestProxy(request, self.defaults)
-        callback = stack_context.wrap(callback)
+    def fetch_impl(self, request, callback):
         self.queue.append((request, callback))
         self._process_queue()
         if self.queue:
@@ -102,11 +94,13 @@ class SimpleAsyncHTTPClient(AsyncHTTPClient):
                 request, callback = self.queue.popleft()
                 key = object()
                 self.active[key] = (request, callback)
-                _HTTPConnection(self.io_loop, self, request,
-                                functools.partial(self._release_fetch, key),
-                                callback,
-                                self.max_buffer_size,
-                                self.ca_certs)
+                release_callback = functools.partial(self._release_fetch, key)
+                self._handle_request(request, release_callback, callback)
+
+    def _handle_request(self, request, release_callback, final_callback):
+        _HTTPConnection(self.io_loop, self, request, release_callback,
+                        final_callback, self.max_buffer_size, self.resolver,
+                        self.ca_certs)
 
     def _release_fetch(self, key):
         del self.active[key]
@@ -117,7 +111,7 @@ class _HTTPConnection(object):
     _SUPPORTED_METHODS = set(["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 
     def __init__(self, io_loop, client, request, release_callback,
-                 final_callback, max_buffer_size, ca_certs=None):
+                 final_callback, max_buffer_size, resolver, ca_certs=None):
         self.start_time = io_loop.time()
         self.io_loop = io_loop
         self.client = client
@@ -125,6 +119,7 @@ class _HTTPConnection(object):
         self.release_callback = release_callback
         self.final_callback = final_callback
         self.max_buffer_size = max_buffer_size
+        self.resolver = resolver
         self.code = None
         self.headers = None
         self.chunks = None
@@ -153,8 +148,6 @@ class _HTTPConnection(object):
                 # raw ipv6 addresses in urls are enclosed in brackets
                 host = host[1:-1]
             self.parsed_hostname = host  # save final host for _on_connect
-            if self.client.hostname_mapping is not None:
-                host = self.client.hostname_mapping.get(host, host)
 
             if request.allow_ipv6:
                 af = socket.AF_UNSPEC
@@ -163,13 +156,24 @@ class _HTTPConnection(object):
                 # so restrict to ipv4 by default.
                 af = socket.AF_INET
 
-            self.client.resolver.getaddrinfo(
-                host, port, af, socket.SOCK_STREAM, 0, 0,
-                callback=self._on_resolve)
+            self.resolver.resolve(host, port, af, callback=self._on_resolve)
 
-    def _on_resolve(self, future):
-        af, socktype, proto, canonname, sockaddr = future.result()[0]
+    def _on_resolve(self, addrinfo):
+        self.stream = self._create_stream(addrinfo)
+        timeout = min(self.request.connect_timeout, self.request.request_timeout)
+        if timeout:
+            self._timeout = self.io_loop.add_timeout(
+                self.start_time + timeout,
+                stack_context.wrap(self._on_timeout))
+        self.stream.set_close_callback(self._on_close)
+        # ipv6 addresses are broken (in self.parsed.hostname) until
+        # 2.7, here is correctly parsed value calculated in __init__
+        sockaddr = addrinfo[0][1]
+        self.stream.connect(sockaddr, self._on_connect,
+                            server_hostname=self.parsed_hostname)
 
+    def _create_stream(self, addrinfo):
+        af = addrinfo[0][0]
         if self.parsed.scheme == "https":
             ssl_options = {}
             if self.request.validate_cert:
@@ -202,34 +206,27 @@ class _HTTPConnection(object):
                 # information.
                 ssl_options["ssl_version"] = ssl.PROTOCOL_SSLv3
 
-            self.stream = SSLIOStream(socket.socket(af, socktype, proto),
-                                      io_loop=self.io_loop,
-                                      ssl_options=ssl_options,
-                                      max_buffer_size=self.max_buffer_size)
+            return SSLIOStream(socket.socket(af),
+                               io_loop=self.io_loop,
+                               ssl_options=ssl_options,
+                               max_buffer_size=self.max_buffer_size)
         else:
-            self.stream = IOStream(socket.socket(af, socktype, proto),
-                                   io_loop=self.io_loop,
-                                   max_buffer_size=self.max_buffer_size)
-        timeout = min(self.request.connect_timeout, self.request.request_timeout)
-        if timeout:
-            self._timeout = self.io_loop.add_timeout(
-                self.start_time + timeout,
-                stack_context.wrap(self._on_timeout))
-        self.stream.set_close_callback(self._on_close)
-        # ipv6 addresses are broken (in self.parsed.hostname) until
-        # 2.7, here is correctly parsed value calculated in __init__
-        self.stream.connect(sockaddr, self._on_connect,
-                            server_hostname=self.parsed_hostname)
+            return IOStream(socket.socket(af),
+                            io_loop=self.io_loop,
+                            max_buffer_size=self.max_buffer_size)
 
     def _on_timeout(self):
         self._timeout = None
         if self.final_callback is not None:
             raise HTTPError(599, "Timeout")
 
-    def _on_connect(self):
+    def _remove_timeout(self):
         if self._timeout is not None:
             self.io_loop.remove_timeout(self._timeout)
             self._timeout = None
+
+    def _on_connect(self):
+        self._remove_timeout()
         if self.request.request_timeout:
             self._timeout = self.io_loop.add_timeout(
                 self.start_time + self.request.request_timeout,
@@ -256,6 +253,9 @@ class _HTTPConnection(object):
             username = self.request.auth_username
             password = self.request.auth_password or ''
         if username is not None:
+            if self.request.auth_mode not in (None, "basic"):
+                raise ValueError("unsupported auth_mode %s",
+                                 self.request.auth_mode)
             auth = utf8(username) + b":" + utf8(password)
             self.request.headers["Authorization"] = (b"Basic " +
                                                      base64.b64encode(auth))
@@ -303,6 +303,7 @@ class _HTTPConnection(object):
 
     def _handle_exception(self, typ, value, tb):
         if self.final_callback:
+            self._remove_timeout()
             gen_log.warning("uncaught exception", exc_info=(typ, value, tb))
             self._run_callback(HTTPResponse(self.request, 599, error=value,
                                             request_time=self.io_loop.time() - self.start_time,
@@ -325,19 +326,22 @@ class _HTTPConnection(object):
                 message = str(self.stream.error)
             raise HTTPError(599, message)
 
+    def _handle_1xx(self, code):
+        self.stream.read_until_regex(b"\r?\n\r?\n", self._on_headers)
+
     def _on_headers(self, data):
         data = native_str(data.decode("latin1"))
         first_line, _, header_data = data.partition("\n")
         match = re.match("HTTP/1.[01] ([0-9]+) ([^\r]*)", first_line)
         assert match
         code = int(match.group(1))
+        self.headers = HTTPHeaders.parse(header_data)
         if 100 <= code < 200:
-            self.stream.read_until_regex(b"\r?\n\r?\n", self._on_headers)
+            self._handle_1xx(code)
             return
         else:
             self.code = code
             self.reason = match.group(2)
-        self.headers = HTTPHeaders.parse(header_data)
 
         if "Content-Length" in self.headers:
             if "," in self.headers["Content-Length"]:
@@ -387,9 +391,7 @@ class _HTTPConnection(object):
             self.stream.read_until_close(self._on_body)
 
     def _on_body(self, data):
-        if self._timeout is not None:
-            self.io_loop.remove_timeout(self._timeout)
-            self._timeout = None
+        self._remove_timeout()
         original_request = getattr(self.request, "original_request",
                                    self.request)
         if (self.request.follow_redirects and
@@ -422,7 +424,7 @@ class _HTTPConnection(object):
             self.final_callback = None
             self._release()
             self.client.fetch(new_request, final_callback)
-            self.stream.close()
+            self._on_end_request()
             return
         if self._decompressor:
             data = (self._decompressor.decompress(data) +
@@ -442,6 +444,9 @@ class _HTTPConnection(object):
                                 buffer=buffer,
                                 effective_url=self.request.url)
         self._run_callback(response)
+        self._on_end_request()
+
+    def _on_end_request(self):
         self.stream.close()
 
     def _on_chunk_length(self, data):

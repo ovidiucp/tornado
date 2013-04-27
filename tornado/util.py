@@ -1,13 +1,25 @@
-"""Miscellaneous utility functions."""
+"""Miscellaneous utility functions and classes.
+
+This module is used internally by Tornado.  It is not necessarily expected
+that the functions and classes defined here will be useful to other
+applications, but they are documented here in case they are.
+
+The one public-facing part of this module is the `Configurable` class
+and its `~Configurable.configure` method, which becomes a part of the
+interface of its subclasses, including `.AsyncHTTPClient`, `.IOLoop`,
+and `.Resolver`.
+"""
 
 from __future__ import absolute_import, division, print_function, with_statement
 
+import inspect
 import sys
 import zlib
 
 
 class ObjectDict(dict):
-    """Makes a dictionary behave like an object."""
+    """Makes a dictionary behave like an object, with attribute-style access.
+    """
     def __getattr__(self, name):
         try:
             return self[name]
@@ -51,6 +63,7 @@ class GzipDecompressor(object):
 def import_object(name):
     """Imports an object by name.
 
+    import_object('x') is equivalent to 'import x'.
     import_object('x.y.z') is equivalent to 'from x.y import z'.
 
     >>> import tornado.escape
@@ -58,10 +71,23 @@ def import_object(name):
     True
     >>> import_object('tornado.escape.utf8') is tornado.escape.utf8
     True
+    >>> import_object('tornado') is tornado
+    True
+    >>> import_object('tornado.missing_module')
+    Traceback (most recent call last):
+        ...
+    ImportError: No module named missing_module
     """
+    if name.count('.') == 0:
+        return __import__(name, None, None)
+
     parts = name.split('.')
     obj = __import__('.'.join(parts[:-1]), None, None, [parts[-1]], 0)
-    return getattr(obj, parts[-1])
+    try:
+        return getattr(obj, parts[-1])
+    except AttributeError:
+        raise ImportError("No module named %s" % parts[-1])
+
 
 # Fake unicode literal support:  Python 3.2 doesn't have the u'' marker for
 # literal strings, and alternative solutions like "from __future__ import
@@ -82,28 +108,14 @@ else:
     basestring_type = basestring
 
 
-# def raise_exc_info(exc_info):
-#     """Re-raise an exception (with original traceback) from an exc_info tuple.
-
-#     The argument is a ``(type, value, traceback)`` tuple as returned by
-#     `sys.exc_info`.
-#     """
-#     # 2to3 isn't smart enough to convert three-argument raise
-#     # statements correctly in some cases.
-#     if isinstance(exc_info[1], exc_info[0]):
-#         raise exc_info[1], None, exc_info[2]
-#         # After 2to3: raise exc_info[1].with_traceback(exc_info[2])
-#     else:
-#         # I think this branch is only taken for string exceptions,
-#         # which were removed in Python 2.6.
-#         raise exc_info[0], exc_info[1], exc_info[2]
-#         # After 2to3: raise exc_info[0](exc_info[1]).with_traceback(exc_info[2])
 if sys.version_info > (3,):
     exec("""
 def raise_exc_info(exc_info):
     raise exc_info[1].with_traceback(exc_info[2])
 
 def exec_in(code, glob, loc=None):
+    if isinstance(code, str):
+        code = compile(code, '<string>', 'exec', dont_inherit=True)
     exec(code, glob, loc)
 """)
 else:
@@ -112,6 +124,10 @@ def raise_exc_info(exc_info):
     raise exc_info[0], exc_info[1], exc_info[2]
 
 def exec_in(code, glob, loc=None):
+    if isinstance(code, basestring):
+        # exec(string) inherits the caller's future imports; compile
+        # the string first to prevent that.
+        code = compile(code, '<string>', 'exec', dont_inherit=True)
     exec code in glob, loc
 """)
 
@@ -124,16 +140,17 @@ class Configurable(object):
     The implementation subclass as well as optional keyword arguments to
     its initializer can be set globally at runtime with `configure`.
 
-    By using the constructor as the factory method, the interface looks like
-    a normal class, ``isinstance()`` works as usual, etc.  This pattern
-    is most useful when the choice of implementation is likely to be a
-    global decision (e.g. when epoll is available, always use it instead of
-    select), or when a previously-monolithic class has been split into
-    specialized subclasses.
+    By using the constructor as the factory method, the interface
+    looks like a normal class, `isinstance` works as usual, etc.  This
+    pattern is most useful when the choice of implementation is likely
+    to be a global decision (e.g. when `~select.epoll` is available,
+    always use it instead of `~select.select`), or when a
+    previously-monolithic class has been split into specialized
+    subclasses.
 
     Configurable subclasses must define the class methods
     `configurable_base` and `configurable_default`, and use the instance
-    method `initialize` instead of `__init__`.
+    method `initialize` instead of ``__init__``.
     """
     __impl_class = None
     __impl_kwargs = None
@@ -172,7 +189,7 @@ class Configurable(object):
     def initialize(self):
         """Initialize a `Configurable` subclass instance.
 
-        Configurable classes should use `initialize` instead of `__init__`.
+        Configurable classes should use `initialize` instead of ``__init__``.
         """
 
     @classmethod
@@ -209,6 +226,43 @@ class Configurable(object):
         base = cls.configurable_base()
         base.__impl_class = saved[0]
         base.__impl_kwargs = saved[1]
+
+
+class ArgReplacer(object):
+    """Replaces one value in an ``args, kwargs`` pair.
+
+    Inspects the function signature to find an argument by name
+    whether it is passed by position or keyword.  For use in decorators
+    and similar wrappers.
+    """
+    def __init__(self, func, name):
+        self.name = name
+        try:
+            self.arg_pos = inspect.getargspec(func).args.index(self.name)
+        except ValueError:
+            # Not a positional parameter
+            self.arg_pos = None
+
+    def replace(self, new_value, args, kwargs):
+        """Replace the named argument in ``args, kwargs`` with ``new_value``.
+
+        Returns ``(old_value, args, kwargs)``.  The returned ``args`` and
+        ``kwargs`` objects may not be the same as the input objects, or
+        the input objects may be mutated.
+
+        If the named argument was not found, ``new_value`` will be added
+        to ``kwargs`` and None will be returned as ``old_value``.
+        """
+        if self.arg_pos is not None and len(args) > self.arg_pos:
+            # The arg to replace is passed positionally
+            old_value = args[self.arg_pos]
+            args = list(args)  # *args is normally a tuple
+            args[self.arg_pos] = new_value
+        else:
+            # The arg to replace is either omitted or passed by keyword.
+            old_value = kwargs.get(self.name)
+            kwargs[self.name] = new_value
+        return old_value, args, kwargs
 
 
 def doctests():

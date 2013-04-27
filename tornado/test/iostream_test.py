@@ -145,6 +145,23 @@ class TestIOStreamMixin(object):
         listener.close()
         return streams
 
+    def test_streaming_callback_with_data_in_buffer(self):
+        server, client = self.make_iostream_pair()
+        client.write(b"abcd\r\nefgh")
+        server.read_until(b"\r\n", self.stop)
+        data = self.wait()
+        self.assertEqual(data, b"abcd\r\n")
+
+        def closed_callback(chunk):
+            self.fail()
+        server.read_until_close(callback=closed_callback,
+                                streaming_callback=self.stop)
+        self.io_loop.add_timeout(self.io_loop.time() + 0.01, self.stop)
+        data = self.wait()
+        self.assertEqual(data, b"efgh")
+        server.close()
+        client.close()
+
     def test_write_zero_bytes(self):
         # Attempting to write zero bytes should run the callback without
         # going into an infinite loop.
@@ -398,10 +415,16 @@ class TestIOStreamMixin(object):
             server.close()
             client.close()
 
+    @skipIfNonUnix
     def test_inline_read_error(self):
         # An error on an inline read is raised without logging (on the
         # assumption that it will eventually be noticed or logged further
         # up the stack).
+        #
+        # This test is posix-only because windows os.close() doesn't work
+        # on socket FDs, but we can't close the socket object normally
+        # because we won't get the error we want if the socket knows
+        # it's closed.
         server, client = self.make_iostream_pair()
         try:
             os.close(server.socket.fileno())
@@ -446,10 +469,10 @@ class TestIOStreamWebHTTPS(TestIOStreamWebMixin, AsyncHTTPSTestCase):
 
 class TestIOStream(TestIOStreamMixin, AsyncTestCase):
     def _make_server_iostream(self, connection, **kwargs):
-        return IOStream(connection, io_loop=self.io_loop, **kwargs)
+        return IOStream(connection, **kwargs)
 
     def _make_client_iostream(self, connection, **kwargs):
-        return IOStream(connection, io_loop=self.io_loop, **kwargs)
+        return IOStream(connection, **kwargs)
 
 
 class TestIOStreamSSL(TestIOStreamMixin, AsyncTestCase):

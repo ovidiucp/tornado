@@ -19,7 +19,7 @@ from tornado.web import RequestHandler, Application
 
 
 def skip_if_twisted():
-    if IOLoop.configured_class().__name__ == 'TwistedIOLoop':
+    if IOLoop.configured_class().__name__.endswith('TwistedIOLoop'):
         raise unittest.SkipTest("Process tests not compatible with TwistedIOLoop")
 
 # Not using AsyncHTTPTestCase because we need control over the IOLoop.
@@ -153,6 +153,16 @@ class SubprocessTest(AsyncTestCase):
         subproc.stdout.read_until_close(self.stop)
         data = self.wait()
         self.assertEqual(data, b"")
+
+    def test_stderr(self):
+        subproc = Subprocess([sys.executable, '-u', '-c',
+                              r"import sys; sys.stderr.write('hello\n')"],
+                             stderr=Subprocess.STREAM,
+                             io_loop=self.io_loop)
+        self.addCleanup(lambda: os.kill(subproc.pid, signal.SIGTERM))
+        subproc.stderr.read_until(b'\n', self.stop)
+        data = self.wait()
+        self.assertEqual(data, b'hello\n')
 
     def test_sigchild(self):
         # Twisted's SIGCHLD handler and Subprocess's conflict with each other.

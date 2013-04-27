@@ -8,7 +8,7 @@ from tornado.httpserver import HTTPServer
 from tornado.httputil import HTTPHeaders
 from tornado.iostream import IOStream
 from tornado.log import gen_log
-from tornado.netutil import ssl_options_to_context
+from tornado.netutil import ssl_options_to_context, Resolver
 from tornado.simple_httpclient import SimpleAsyncHTTPClient
 from tornado.testing import AsyncHTTPTestCase, AsyncHTTPSTestCase, AsyncTestCase, ExpectLog
 from tornado.test.util import unittest
@@ -132,7 +132,7 @@ class BadSSLOptionsTest(unittest.TestCase):
         })
 
     def test_missing_key(self):
-        '''A missing SSL key should cause an immediate exception.'''
+        """A missing SSL key should cause an immediate exception."""
 
         application = Application()
         module_dir = os.path.dirname(__file__)
@@ -190,7 +190,7 @@ class HTTPConnectionTest(AsyncHTTPTestCase):
                 httpclient.HTTPRequest(self.get_url("/")),
                 dict(httpclient.HTTPRequest._DEFAULTS)),
             None, self.stop,
-            1024 * 1024)
+            1024 * 1024, Resolver(io_loop=self.io_loop))
         conn.set_request(
             b"\r\n".join(headers +
                          [utf8("Content-Length: %d\r\n" % len(body))]) +
@@ -258,6 +258,8 @@ class EchoHandler(RequestHandler):
     def get(self):
         self.write(recursive_unicode(self.request.arguments))
 
+    def post(self):
+        self.write(recursive_unicode(self.request.arguments))
 
 class TypeCheckHandler(RequestHandler):
     def prepare(self):
@@ -316,6 +318,11 @@ class HTTPServerTest(AsyncHTTPTestCase):
         data = json_decode(response.body)
         self.assertEqual(data, {u("foo"): [u(""), u("")]})
 
+    def test_empty_post_parameters(self):
+        response = self.fetch("/echo", method="POST", body="foo=&bar=")
+        data = json_decode(response.body)
+        self.assertEqual(data, {u("foo"): [u("")], u("bar"): [u("")]})
+
     def test_types(self):
         headers = {"Cookie": "foo=bar"}
         response = self.fetch("/typecheck?foo=bar", headers=headers)
@@ -334,30 +341,65 @@ class HTTPServerTest(AsyncHTTPTestCase):
         self.assertEqual(200, response.code)
         self.assertEqual(json_decode(response.body), {})
 
-    def test_empty_request(self):
-        stream = IOStream(socket.socket(), io_loop=self.io_loop)
-        stream.connect(('localhost', self.get_http_port()), self.stop)
+
+class HTTPServerRawTest(AsyncHTTPTestCase):
+    def get_app(self):
+        return Application([
+                ('/echo', EchoHandler),
+                ])
+
+    def setUp(self):
+        super(HTTPServerRawTest, self).setUp()
+        self.stream = IOStream(socket.socket())
+        self.stream.connect(('localhost', self.get_http_port()), self.stop)
         self.wait()
-        stream.close()
+
+    def tearDown(self):
+        self.stream.close()
+        super(HTTPServerRawTest, self).tearDown()
+
+    def test_empty_request(self):
+        self.stream.close()
         self.io_loop.add_timeout(datetime.timedelta(seconds=0.001), self.stop)
         self.wait()
+
+    def test_malformed_first_line(self):
+        with ExpectLog(gen_log, '.*Malformed HTTP request line'):
+            self.stream.write(b'asdf\r\n\r\n')
+            # TODO: need an async version of ExpectLog so we don't need
+            # hard-coded timeouts here.
+            self.io_loop.add_timeout(datetime.timedelta(seconds=0.01),
+                                     self.stop)
+            self.wait()
+
+    def test_malformed_headers(self):
+        with ExpectLog(gen_log, '.*Malformed HTTP headers'):
+            self.stream.write(b'GET / HTTP/1.0\r\nasdf\r\n\r\n')
+            self.io_loop.add_timeout(datetime.timedelta(seconds=0.01),
+                                     self.stop)
+            self.wait()
 
 
 class XHeaderTest(HandlerBaseTestCase):
     class Handler(RequestHandler):
         def get(self):
-            self.write(dict(remote_ip=self.request.remote_ip))
+            self.write(dict(remote_ip=self.request.remote_ip,
+                remote_protocol=self.request.protocol))
 
     def get_httpserver_options(self):
         return dict(xheaders=True)
 
     def test_ip_headers(self):
-        self.assertEqual(self.fetch_json("/")["remote_ip"],
-                         "127.0.0.1")
+        self.assertEqual(self.fetch_json("/")["remote_ip"], "127.0.0.1")
 
         valid_ipv4 = {"X-Real-IP": "4.4.4.4"}
         self.assertEqual(
             self.fetch_json("/", headers=valid_ipv4)["remote_ip"],
+            "4.4.4.4")
+
+        valid_ipv4_list = {"X-Forwarded-For": "127.0.0.1, 4.4.4.4"}
+        self.assertEqual(
+            self.fetch_json("/", headers=valid_ipv4_list)["remote_ip"],
             "4.4.4.4")
 
         valid_ipv6 = {"X-Real-IP": "2620:0:1cfe:face:b00c::3"}
@@ -365,15 +407,64 @@ class XHeaderTest(HandlerBaseTestCase):
             self.fetch_json("/", headers=valid_ipv6)["remote_ip"],
             "2620:0:1cfe:face:b00c::3")
 
+        valid_ipv6_list = {"X-Forwarded-For": "::1, 2620:0:1cfe:face:b00c::3"}
+        self.assertEqual(
+            self.fetch_json("/", headers=valid_ipv6_list)["remote_ip"],
+            "2620:0:1cfe:face:b00c::3")
+
         invalid_chars = {"X-Real-IP": "4.4.4.4<script>"}
         self.assertEqual(
             self.fetch_json("/", headers=invalid_chars)["remote_ip"],
+            "127.0.0.1")
+
+        invalid_chars_list = {"X-Forwarded-For": "4.4.4.4, 5.5.5.5<script>"}
+        self.assertEqual(
+            self.fetch_json("/", headers=invalid_chars_list)["remote_ip"],
             "127.0.0.1")
 
         invalid_host = {"X-Real-IP": "www.google.com"}
         self.assertEqual(
             self.fetch_json("/", headers=invalid_host)["remote_ip"],
             "127.0.0.1")
+
+    def test_scheme_headers(self):
+        self.assertEqual(self.fetch_json("/")["remote_protocol"], "http")
+
+        https_scheme = {"X-Scheme": "https"}
+        self.assertEqual(
+            self.fetch_json("/", headers=https_scheme)["remote_protocol"],
+            "https")
+
+        https_forwarded = {"X-Forwarded-Proto": "https"}
+        self.assertEqual(
+            self.fetch_json("/", headers=https_forwarded)["remote_protocol"],
+            "https")
+
+        bad_forwarded = {"X-Forwarded-Proto": "unknown"}
+        self.assertEqual(
+            self.fetch_json("/", headers=bad_forwarded)["remote_protocol"],
+            "http")
+
+
+class SSLXHeaderTest(AsyncHTTPSTestCase, HandlerBaseTestCase):
+    def get_app(self):
+        return Application([('/', XHeaderTest.Handler)])
+
+    def get_httpserver_options(self):
+        output = super(SSLXHeaderTest, self).get_httpserver_options()
+        output['xheaders'] = True
+        return output
+
+    def test_request_without_xprotocol(self):
+        self.assertEqual(self.fetch_json("/")["remote_protocol"], "https")
+
+        http_scheme = {"X-Scheme": "http"}
+        self.assertEqual(
+            self.fetch_json("/", headers=http_scheme)["remote_protocol"], "http")
+
+        bad_scheme = {"X-Scheme": "unknown"}
+        self.assertEqual(
+            self.fetch_json("/", headers=bad_scheme)["remote_protocol"], "https")
 
 
 class ManualProtocolTest(HandlerBaseTestCase):

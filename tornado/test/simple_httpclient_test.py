@@ -18,7 +18,7 @@ from tornado.simple_httpclient import SimpleAsyncHTTPClient, _DEFAULT_CA_CERTS
 from tornado.test.httpclient_test import ChunkHandler, CountdownHandler, HelloWorldHandler
 from tornado.test import httpclient_test
 from tornado.testing import AsyncHTTPTestCase, AsyncTestCase, bind_unused_port, ExpectLog
-from tornado.test.util import unittest
+from tornado.test.util import unittest, skipOnTravis
 from tornado.web import RequestHandler, Application, asynchronous, url
 
 
@@ -209,11 +209,12 @@ class SimpleHTTPClientTestCase(AsyncHTTPTestCase):
             # request is the original request, is a POST still
             self.assertEqual("POST", response.request.method)
 
+    @skipOnTravis
     def test_request_timeout(self):
         with ExpectLog(gen_log, "uncaught exception"):
             response = self.fetch('/trigger?wake=false', request_timeout=0.1)
         self.assertEqual(response.code, 599)
-        self.assertTrue(0.099 < response.request_time < 0.12, response.request_time)
+        self.assertTrue(0.099 < response.request_time < 0.15, response.request_time)
         self.assertEqual(str(response.error), "HTTP 599: Timeout")
         # trigger the hanging request to let it clean up after itself
         self.triggers.popleft()()
@@ -357,3 +358,30 @@ class HTTP100ContinueTestCase(AsyncHTTPTestCase):
     def test_100_continue(self):
         res = self.fetch('/')
         self.assertEqual(res.body, b'A')
+
+
+class HostnameMappingTestCase(AsyncHTTPTestCase):
+    def setUp(self):
+        super(HostnameMappingTestCase, self).setUp()
+        self.http_client = SimpleAsyncHTTPClient(
+            self.io_loop,
+            hostname_mapping={
+                'www.example.com': '127.0.0.1',
+                ('foo.example.com', 8000): ('127.0.0.1', self.get_http_port()),
+            })
+
+    def get_app(self):
+        return Application([url("/hello", HelloWorldHandler), ])
+
+    def test_hostname_mapping(self):
+        self.http_client.fetch(
+            'http://www.example.com:%d/hello' % self.get_http_port(), self.stop)
+        response = self.wait()
+        response.rethrow()
+        self.assertEqual(response.body, b'Hello world!')
+
+    def test_port_mapping(self):
+        self.http_client.fetch('http://foo.example.com:8000/hello', self.stop)
+        response = self.wait()
+        response.rethrow()
+        self.assertEqual(response.body, b'Hello world!')

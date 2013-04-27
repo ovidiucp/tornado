@@ -7,13 +7,17 @@ import binascii
 from contextlib import closing
 import functools
 import sys
+import threading
 
 from tornado.escape import utf8
-from tornado.httpclient import HTTPRequest, HTTPResponse, _RequestProxy
+from tornado.httpclient import HTTPRequest, HTTPResponse, _RequestProxy, HTTPError, HTTPClient
+from tornado.httpserver import HTTPServer
+from tornado.ioloop import IOLoop
 from tornado.iostream import IOStream
+from tornado.log import gen_log
 from tornado import netutil
 from tornado.stack_context import ExceptionStackContext, NullContext
-from tornado.testing import AsyncHTTPTestCase, bind_unused_port
+from tornado.testing import AsyncHTTPTestCase, bind_unused_port, gen_test, ExpectLog
 from tornado.test.util import unittest
 from tornado.util import u, bytes_type
 from tornado.web import Application, RequestHandler, url
@@ -22,6 +26,7 @@ try:
     from io import BytesIO  # python 3
 except ImportError:
     from cStringIO import StringIO as BytesIO
+
 
 class HelloWorldHandler(RequestHandler):
     def get(self):
@@ -187,6 +192,23 @@ Transfer-Encoding: chunked
                                     auth_password="open sesame").body,
                          b"Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==")
 
+    def test_basic_auth_explicit_mode(self):
+        self.assertEqual(self.fetch("/auth", auth_username="Aladdin",
+                                    auth_password="open sesame",
+                                    auth_mode="basic").body,
+                         b"Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==")
+
+    def test_unsupported_auth_mode(self):
+        # curl and simple clients handle errors a bit differently; the
+        # important thing is that they don't fall back to basic auth
+        # on an unknown mode.
+        with ExpectLog(gen_log, "uncaught exception", required=False):
+            with self.assertRaises((ValueError, HTTPError)):
+                response = self.fetch("/auth", auth_username="Aladdin",
+                                      auth_password="open sesame",
+                                      auth_mode="asdf")
+                response.rethrow()
+
     def test_follow_redirect(self):
         response = self.fetch("/countdown/2", follow_redirects=False)
         self.assertEqual(302, response.code)
@@ -285,6 +307,7 @@ Transfer-Encoding: chunked
         client.fetch(self.get_url('/user_agent'), callback=self.stop)
         response = self.wait()
         self.assertEqual(response.body, b'TestDefaultUserAgent')
+        client.close()
 
     def test_304_with_content_length(self):
         # According to the spec 304 responses SHOULD NOT include
@@ -315,6 +338,32 @@ Transfer-Encoding: chunked
                                    lambda response: 1 / 0)
         self.wait()
         self.assertEqual(exc_info[0][0], ZeroDivisionError)
+
+    @gen_test
+    def test_future_interface(self):
+        response = yield self.http_client.fetch(self.get_url('/hello'))
+        self.assertEqual(response.body, b'Hello world!')
+
+    @gen_test
+    def test_future_http_error(self):
+        try:
+            yield self.http_client.fetch(self.get_url('/notfound'))
+        except HTTPError as e:
+            self.assertEqual(e.code, 404)
+            self.assertEqual(e.response.code, 404)
+
+    @gen_test
+    def test_reuse_request_from_response(self):
+        # The response.request attribute should be an HTTPRequest, not
+        # a _RequestProxy.
+        # This test uses self.http_client.fetch because self.fetch calls
+        # self.get_url on the input unconditionally.
+        url = self.get_url('/hello')
+        response = yield self.http_client.fetch(url)
+        self.assertEqual(response.request.url, url)
+        self.assertTrue(isinstance(response.request, HTTPRequest))
+        response2 = yield self.http_client.fetch(response.request)
+        self.assertEqual(response2.body, b'Hello world!')
 
 
 class RequestProxyTest(unittest.TestCase):
@@ -358,3 +407,42 @@ class HTTPResponseTestCase(unittest.TestCase):
         s = str(response)
         self.assertTrue(s.startswith('HTTPResponse('))
         self.assertIn('code=200', s)
+
+
+class SyncHTTPClientTest(unittest.TestCase):
+    def setUp(self):
+        if IOLoop.configured_class().__name__ == 'TwistedIOLoop':
+            # TwistedIOLoop only supports the global reactor, so we can't have
+            # separate IOLoops for client and server threads.
+            raise unittest.SkipTest(
+                'Sync HTTPClient not compatible with TwistedIOLoop')
+        self.server_ioloop = IOLoop()
+
+        sock, self.port = bind_unused_port()
+        app = Application([('/', HelloWorldHandler)])
+        server = HTTPServer(app, io_loop=self.server_ioloop)
+        server.add_socket(sock)
+
+        self.server_thread = threading.Thread(target=self.server_ioloop.start)
+        self.server_thread.start()
+
+        self.http_client = HTTPClient()
+
+    def tearDown(self):
+        self.server_ioloop.add_callback(self.server_ioloop.stop)
+        self.server_thread.join()
+        self.server_ioloop.close(all_fds=True)
+
+    def get_url(self, path):
+        return 'http://localhost:%d%s' % (self.port, path)
+
+    def test_sync_client(self):
+        response = self.http_client.fetch(self.get_url('/'))
+        self.assertEqual(b'Hello world!', response.body)
+
+    def test_sync_client_error(self):
+        # Synchronous HTTPClient raises errors directly; no need for
+        # response.rethrow()
+        with self.assertRaises(HTTPError) as assertion:
+            self.http_client.fetch(self.get_url('/notfound'))
+        self.assertEqual(assertion.exception.code, 404)

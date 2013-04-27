@@ -79,9 +79,10 @@ We provide the functions escape(), url_escape(), json_encode(), and squeeze()
 to all templates by default.
 
 Typical applications do not create `Template` or `Loader` instances by
-hand, but instead use the `render` and `render_string` methods of
+hand, but instead use the `~.RequestHandler.render` and
+`~.RequestHandler.render_string` methods of
 `tornado.web.RequestHandler`, which load templates automatically based
-on the ``template_path`` `Application` setting.
+on the ``template_path`` `.Application` setting.
 
 Syntax Reference
 ----------------
@@ -109,7 +110,7 @@ with ``{# ... #}``.
 ``{% autoescape *function* %}``
     Sets the autoescape mode for the current file.  This does not affect
     other files, even those referenced by ``{% include %}``.  Note that
-    autoescaping can also be configured globally, at the `Application`
+    autoescaping can also be configured globally, at the `.Application`
     or `Loader`.::
 
         {% autoescape xhtml_escape %}
@@ -230,10 +231,12 @@ class Template(object):
         try:
             # Under python2.5, the fake filename used here must match
             # the module name used in __name__ below.
+            # The dont_inherit flag prevents template.py's future imports
+            # from being applied to the generated code.
             self.compiled = compile(
                 escape.to_unicode(self.code),
                 "%s.generated.py" % self.name.replace('.', '_'),
-                "exec")
+                "exec", dont_inherit=True)
         except Exception:
             formatted_code = _format_code(self.code).rstrip()
             app_log.error("%s code:\n%s", self.name, formatted_code)
@@ -296,14 +299,14 @@ class Template(object):
 
 
 class BaseLoader(object):
-    """Base class for template loaders."""
+    """Base class for template loaders.
+
+    You must use a template loader to use template constructs like
+    ``{% extends %}`` and ``{% include %}``. The loader caches all
+    templates after they are loaded the first time.
+    """
     def __init__(self, autoescape=_DEFAULT_AUTOESCAPE, namespace=None):
-        """Creates a template loader.
-
-        root_directory may be the empty string if this loader does not
-        use the filesystem.
-
-        autoescape must be either None or a string naming a function
+        """``autoescape`` must be either None or a string naming a function
         in the template namespace, such as "xhtml_escape".
         """
         self.autoescape = autoescape
@@ -339,10 +342,6 @@ class BaseLoader(object):
 
 class Loader(BaseLoader):
     """A template loader that loads from a single root directory.
-
-    You must use a template loader to use template constructs like
-    {% extends %} and {% include %}. Loader caches all templates after
-    they are loaded the first time.
     """
     def __init__(self, root_directory, **kwargs):
         super(Loader, self).__init__(**kwargs)
