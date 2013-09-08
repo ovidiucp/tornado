@@ -323,6 +323,7 @@ class BaseLoader(object):
         """Resets the cache of compiled templates."""
         with self.lock:
             self.templates = {}
+        return self
 
     def resolve_path(self, name, parent_path=None):
         """Converts a possibly-relative path to absolute (used internally)."""
