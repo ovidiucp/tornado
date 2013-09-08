@@ -1609,15 +1609,21 @@ class StaticFileHandler(RequestHandler):
     want browsers to cache a file indefinitely, send them to, e.g.,
     ``/static/images/myimage.png?v=xxx``. Override `get_cache_time` method for
     more fine-grained cache control.
+
+    If present, the ``preprocess_data_fn`` is called to process a
+    file's content before sent in the response. The functions should
+    take three arguments, the request object, the file's content and
+    the MIME type of the file.
     """
     CACHE_MAX_AGE = 86400 * 365 * 10  # 10 years
 
     _static_hashes = {}
     _lock = threading.Lock()  # protects _static_hashes
 
-    def initialize(self, path, default_filename=None):
+    def initialize(self, path, default_filename=None, preprocess_data_fn=None):
         self.root = os.path.abspath(path) + os.path.sep
         self.default_filename = default_filename
+        self.preprocess_data_fn = preprocess_data_fn
 
     @classmethod
     def reset(cls):
@@ -1677,6 +1683,8 @@ class StaticFileHandler(RequestHandler):
 
         with open(abspath, "rb") as file:
             data = file.read()
+            if self.preprocess_data_fn:
+                data = self.preprocess_data_fn(self.request, data, mime_type)
             if include_body:
                 self.write(data)
             else:
