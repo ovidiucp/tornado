@@ -14,13 +14,17 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
-"""xAutomatically restart the server when a source file is modified.
+"""Automatically restart the server when a source file is modified.
 
-Most applications should not access this module directly.  Instead, pass the
-keyword argument ``debug=True`` to the `tornado.web.Application` constructor.
-This will enable autoreload mode as well as checking for changes to templates
-and static resources.  Note that restarting is a destructive operation
-and any requests in progress will be aborted when the process restarts.
+Most applications should not access this module directly.  Instead,
+pass the keyword argument ``autoreload=True`` to the
+`tornado.web.Application` constructor (or ``debug=True``, which
+enables this setting and several others).  This will enable autoreload
+mode as well as checking for changes to templates and static
+resources.  Note that restarting is a destructive operation and any
+requests in progress will be aborted when the process restarts.  (If
+you want to disable autoreload while using other debug-mode features,
+pass both ``debug=True`` and ``autoreload=False``).
 
 This module can also be used as a command-line wrapper around scripts
 such as unit test runners.  See the `main` method for details.
@@ -38,6 +42,7 @@ Reloading loses any Python interpreter command-line arguments (e.g. ``-u``)
 because it re-executes Python using ``sys.executable`` and ``sys.argv``.
 Additionally, modifying these variables will cause reloading to behave
 incorrectly.
+
 """
 
 from __future__ import absolute_import, division, print_function, with_statement
@@ -95,6 +100,14 @@ try:
 except ImportError:
     signal = None
 
+# os.execv is broken on Windows and can't properly parse command line
+# arguments and executable name if they contain whitespaces. subprocess
+# fixes that behavior.
+# This distinction is also important because when we use execv, we want to
+# close the IOLoop and all its file descriptors, to guard against any
+# file descriptors that were not set CLOEXEC. When execv is not available,
+# we must not close the IOLoop because we want the process to exit cleanly.
+_has_execv = sys.platform != 'win32'
 
 _watched_files = set()
 _reload_hooks = []
@@ -103,14 +116,19 @@ _io_loops = weakref.WeakKeyDictionary()
 
 
 def start(io_loop=None, check_time=500):
-    """Begins watching source files for changes using the given `.IOLoop`. """
+    """Begins watching source files for changes.
+
+    .. versionchanged:: 4.1
+       The ``io_loop`` argument is deprecated.
+    """
     io_loop = io_loop or ioloop.IOLoop.current()
     if io_loop in _io_loops:
         return
     _io_loops[io_loop] = True
     if len(_io_loops) > 1:
         gen_log.warning("tornado.autoreload started more than once in the same process")
-    add_reload_hook(functools.partial(io_loop.close, all_fds=True))
+    if _has_execv:
+        add_reload_hook(functools.partial(io_loop.close, all_fds=True))
     modify_times = {}
     callback = functools.partial(_reload_on_update, modify_times)
     scheduler = ioloop.PeriodicCallback(callback, check_time, io_loop=io_loop)
@@ -157,7 +175,7 @@ def _reload_on_update(modify_times):
         # processes restarted themselves, they'd all restart and then
         # all call fork_processes again.
         return
-    for module in sys.modules.values():
+    for module in list(sys.modules.values()):
         # Some modules play games with sys.modules (e.g. email/__init__.py
         # in the standard library), and occasionally this can cause strange
         # failures in getattr.  Just ignore anything that's not an ordinary
@@ -206,10 +224,7 @@ def _reload():
             not os.environ.get("PYTHONPATH", "").startswith(path_prefix)):
         os.environ["PYTHONPATH"] = (path_prefix +
                                     os.environ.get("PYTHONPATH", ""))
-    if sys.platform == 'win32':
-        # os.execv is broken on Windows and can't properly parse command line
-        # arguments and executable name if they contain whitespaces. subprocess
-        # fixes that behavior.
+    if not _has_execv:
         subprocess.Popen([sys.executable] + sys.argv)
         sys.exit(0)
     else:
@@ -229,7 +244,10 @@ def _reload():
             # this error specifically.
             os.spawnv(os.P_NOWAIT, sys.executable,
                       [sys.executable] + sys.argv)
-            sys.exit(0)
+            # At this point the IOLoop has been closed and finally
+            # blocks will experience errors if we allow the stack to
+            # unwind, so just exit uncleanly.
+            os._exit(0)
 
 _USAGE = """\
 Usage:

@@ -4,8 +4,8 @@
 from __future__ import absolute_import, division, print_function, with_statement
 import tornado.escape
 
-from tornado.escape import utf8, xhtml_escape, xhtml_unescape, url_escape, url_unescape, to_unicode, json_decode, json_encode
-from tornado.util import u, unicode_type, bytes_type
+from tornado.escape import utf8, xhtml_escape, xhtml_unescape, url_escape, url_unescape, to_unicode, json_decode, json_encode, squeeze, recursive_unicode
+from tornado.util import u, unicode_type
 from tornado.test.util import unittest
 
 linkify_tests = [
@@ -144,14 +144,17 @@ class EscapeTestCase(unittest.TestCase):
             (u("<foo>"), u("&lt;foo&gt;")),
             (b"<foo>", b"&lt;foo&gt;"),
 
-            ("<>&\"", "&lt;&gt;&amp;&quot;"),
+            ("<>&\"'", "&lt;&gt;&amp;&quot;&#39;"),
             ("&amp;", "&amp;amp;"),
+
+            (u("<\u00e9>"), u("&lt;\u00e9&gt;")),
+            (b"<\xc3\xa9>", b"&lt;\xc3\xa9&gt;"),
         ]
         for unescaped, escaped in tests:
             self.assertEqual(utf8(xhtml_escape(unescaped)), utf8(escaped))
             self.assertEqual(utf8(unescaped), utf8(xhtml_unescape(escaped)))
 
-    def test_url_escape(self):
+    def test_url_escape_unicode(self):
         tests = [
             # byte strings are passed through as-is
             (u('\u00e9').encode('utf8'), '%C3%A9'),
@@ -163,7 +166,7 @@ class EscapeTestCase(unittest.TestCase):
         for unescaped, escaped in tests:
             self.assertEqual(url_escape(unescaped), escaped)
 
-    def test_url_unescape(self):
+    def test_url_unescape_unicode(self):
         tests = [
             ('%C3%A9', u('\u00e9'), 'utf8'),
             ('%C3%A9', u('\u00c3\u00a9'), 'latin1'),
@@ -175,6 +178,19 @@ class EscapeTestCase(unittest.TestCase):
             # and unicode strings.
             self.assertEqual(url_unescape(to_unicode(escaped), encoding), unescaped)
             self.assertEqual(url_unescape(utf8(escaped), encoding), unescaped)
+
+    def test_url_escape_quote_plus(self):
+        unescaped = '+ #%'
+        plus_escaped = '%2B+%23%25'
+        escaped = '%2B%20%23%25'
+        self.assertEqual(url_escape(unescaped), plus_escaped)
+        self.assertEqual(url_escape(unescaped, plus=False), escaped)
+        self.assertEqual(url_unescape(plus_escaped), unescaped)
+        self.assertEqual(url_unescape(escaped, plus=False), unescaped)
+        self.assertEqual(url_unescape(plus_escaped, encoding=None),
+                         utf8(unescaped))
+        self.assertEqual(url_unescape(escaped, encoding=None, plus=False),
+                         utf8(unescaped))
 
     def test_escape_return_types(self):
         # On python2 the escape methods should generally return the same
@@ -196,6 +212,21 @@ class EscapeTestCase(unittest.TestCase):
         # convert automatically if they are utf8; on python 3 byte strings
         # are not allowed.
         self.assertEqual(json_decode(json_encode(u("\u00e9"))), u("\u00e9"))
-        if bytes_type is str:
+        if bytes is str:
             self.assertEqual(json_decode(json_encode(utf8(u("\u00e9")))), u("\u00e9"))
             self.assertRaises(UnicodeDecodeError, json_encode, b"\xe9")
+
+    def test_squeeze(self):
+        self.assertEqual(squeeze(u('sequences     of    whitespace   chars')), u('sequences of whitespace chars'))
+
+    def test_recursive_unicode(self):
+        tests = {
+            'dict': {b"foo": b"bar"},
+            'list': [b"foo", b"bar"],
+            'tuple': (b"foo", b"bar"),
+            'bytes': b"foo"
+        }
+        self.assertEqual(recursive_unicode(tests['dict']), {u("foo"): u("bar")})
+        self.assertEqual(recursive_unicode(tests['list']), [u("foo"), u("bar")])
+        self.assertEqual(recursive_unicode(tests['tuple']), (u("foo"), u("bar")))
+        self.assertEqual(recursive_unicode(tests['bytes']), u("foo"))

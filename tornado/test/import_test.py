@@ -1,3 +1,4 @@
+# flake8: noqa
 from __future__ import absolute_import, division, print_function, with_statement
 from tornado.test.util import unittest
 
@@ -13,6 +14,7 @@ class ImportTest(unittest.TestCase):
         # import tornado.curl_httpclient  # depends on pycurl
         import tornado.escape
         import tornado.gen
+        import tornado.http1connection
         import tornado.httpclient
         import tornado.httpserver
         import tornado.httputil

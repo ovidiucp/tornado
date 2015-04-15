@@ -41,13 +41,13 @@ Example usage::
             sys.exit(1)
 
     with StackContext(die_on_error):
-        # Any exception thrown here *or in callback and its desendents*
+        # Any exception thrown here *or in callback and its descendants*
         # will cause the process to exit instead of spinning endlessly
         # in the ioloop.
         http_client.fetch(url, callback)
     ioloop.start()
 
-Most applications shouln't have to work with `StackContext` directly.
+Most applications shouldn't have to work with `StackContext` directly.
 Here are a few rules of thumb for when it's necessary:
 
 * If you're writing an asynchronous library that doesn't rely on a
@@ -108,6 +108,10 @@ class StackContext(object):
     def __init__(self, context_factory):
         self.context_factory = context_factory
         self.contexts = []
+        self.active = True
+
+    def _deactivate(self):
+        self.active = False
 
     # StackContext protocol
     def enter(self):
@@ -133,6 +137,8 @@ class StackContext(object):
             _state.contexts = self.old_contexts
             raise
 
+        return self._deactivate
+
     def __exit__(self, type, value, traceback):
         try:
             self.exit(type, value, traceback)
@@ -151,6 +157,9 @@ class StackContext(object):
                     'stack_context inconsistency (may be caused by yield '
                     'within a "with StackContext" block)')
 
+            # Break up a reference to itself to allow for faster GC on CPython.
+            self.new_contexts = None
+
 
 class ExceptionStackContext(object):
     """Specialization of StackContext for exception handling.
@@ -167,6 +176,10 @@ class ExceptionStackContext(object):
     """
     def __init__(self, exception_handler):
         self.exception_handler = exception_handler
+        self.active = True
+
+    def _deactivate(self):
+        self.active = False
 
     def exit(self, type, value, traceback):
         if type is not None:
@@ -176,6 +189,8 @@ class ExceptionStackContext(object):
         self.old_contexts = _state.contexts
         self.new_contexts = (self.old_contexts[0], self)
         _state.contexts = self.new_contexts
+
+        return self._deactivate
 
     def __exit__(self, type, value, traceback):
         try:
@@ -189,6 +204,9 @@ class ExceptionStackContext(object):
                 raise StackContextInconsistentError(
                     'stack_context inconsistency (may be caused by yield '
                     'within a "with StackContext" block)')
+
+            # Break up a reference to itself to allow for faster GC on CPython.
+            self.new_contexts = None
 
 
 class NullContext(object):
@@ -206,6 +224,32 @@ class NullContext(object):
         _state.contexts = self.old_contexts
 
 
+def _remove_deactivated(contexts):
+    """Remove deactivated handlers from the chain"""
+    # Clean ctx handlers
+    stack_contexts = tuple([h for h in contexts[0] if h.active])
+
+    # Find new head
+    head = contexts[1]
+    while head is not None and not head.active:
+        head = head.old_contexts[1]
+
+    # Process chain
+    ctx = head
+    while ctx is not None:
+        parent = ctx.old_contexts[1]
+
+        while parent is not None:
+            if parent.active:
+                break
+            ctx.old_contexts = parent.old_contexts
+            parent = parent.old_contexts[1]
+
+        ctx = parent
+
+    return (stack_contexts, head)
+
+
 def wrap(fn):
     """Returns a callable object that will restore the current `StackContext`
     when executed.
@@ -219,13 +263,31 @@ def wrap(fn):
         return fn
 
     # Capture current stack head
-    contexts = _state.contexts
+    # TODO: Any other better way to store contexts and update them in wrapped function?
+    cap_contexts = [_state.contexts]
 
-    #@functools.wraps
+    if not cap_contexts[0][0] and not cap_contexts[0][1]:
+        # Fast path when there are no active contexts.
+        def null_wrapper(*args, **kwargs):
+            try:
+                current_state = _state.contexts
+                _state.contexts = cap_contexts[0]
+                return fn(*args, **kwargs)
+            finally:
+                _state.contexts = current_state
+        null_wrapper._wrapped = True
+        return null_wrapper
+
     def wrapped(*args, **kwargs):
+        ret = None
         try:
-            # Force local state - switch to new stack chain
+            # Capture old state
             current_state = _state.contexts
+
+            # Remove deactivated items
+            cap_contexts[0] = contexts = _remove_deactivated(cap_contexts[0])
+
+            # Force new state
             _state.contexts = contexts
 
             # Current exception
@@ -249,7 +311,7 @@ def wrap(fn):
             # Execute callback if no exception happened while restoring state
             if top is None:
                 try:
-                    fn(*args, **kwargs)
+                    ret = fn(*args, **kwargs)
                 except:
                     exc = sys.exc_info()
                     top = contexts[1]
@@ -281,6 +343,7 @@ def wrap(fn):
                 raise_exc_info(exc)
         finally:
             _state.contexts = current_state
+        return ret
 
     wrapped._wrapped = True
     return wrapped
@@ -297,3 +360,29 @@ def _handle_exception(tail, exc):
         tail = tail.old_contexts[1]
 
     return exc
+
+
+def run_with_stack_context(context, func):
+    """Run a coroutine ``func`` in the given `StackContext`.
+
+    It is not safe to have a ``yield`` statement within a ``with StackContext``
+    block, so it is difficult to use stack context with `.gen.coroutine`.
+    This helper function runs the function in the correct context while
+    keeping the ``yield`` and ``with`` statements syntactically separate.
+
+    Example::
+
+        @gen.coroutine
+        def incorrect():
+            with StackContext(ctx):
+                # ERROR: this will raise StackContextInconsistentError
+                yield other_coroutine()
+
+        @gen.coroutine
+        def correct():
+            yield run_with_stack_context(StackContext(ctx), other_coroutine)
+
+    .. versionadded:: 3.1
+    """
+    with context:
+        return func()

@@ -56,17 +56,30 @@ We support `datetimes <datetime.datetime>`, `timedeltas
 the top-level functions in this module (`define`, `parse_command_line`, etc)
 simply call methods on it.  You may create additional `OptionParser`
 instances to define isolated sets of options, such as for subcommands.
+
+.. note::
+
+   By default, several options are defined that will configure the
+   standard `logging` module when `parse_command_line` or `parse_config_file`
+   are called.  If you want Tornado to leave the logging configuration
+   alone so you can manage it yourself, either pass ``--logging=none``
+   on the command line or do the following to disable it in code::
+
+       from tornado.options import options, parse_command_line
+       options.logging = None
+       parse_command_line()
 """
 
 from __future__ import absolute_import, division, print_function, with_statement
 
 import datetime
+import numbers
 import re
 import sys
 import os
 import textwrap
 
-from tornado.escape import _unicode
+from tornado.escape import _unicode, native_str
 from tornado.log import define_logging_options
 from tornado import stack_context
 from tornado.util import basestring_type, exec_in
@@ -99,6 +112,55 @@ class OptionParser(object):
         if isinstance(self._options.get(name), _Option):
             return self._options[name].set(value)
         raise AttributeError("Unrecognized option %r" % name)
+
+    def __iter__(self):
+        return iter(self._options)
+
+    def __getitem__(self, item):
+        return self._options[item].value()
+
+    def items(self):
+        """A sequence of (name, value) pairs.
+
+        .. versionadded:: 3.1
+        """
+        return [(name, opt.value()) for name, opt in self._options.items()]
+
+    def groups(self):
+        """The set of option-groups created by ``define``.
+
+        .. versionadded:: 3.1
+        """
+        return set(opt.group_name for opt in self._options.values())
+
+    def group_dict(self, group):
+        """The names and values of options in a group.
+
+        Useful for copying options into Application settings::
+
+            from tornado.options import define, parse_command_line, options
+
+            define('template_path', group='application')
+            define('static_path', group='application')
+
+            parse_command_line()
+
+            application = Application(
+                handlers, **options.group_dict('application'))
+
+        .. versionadded:: 3.1
+        """
+        return dict(
+            (name, opt.value()) for name, opt in self._options.items()
+            if not group or group == opt.group_name)
+
+    def as_dict(self):
+        """The names and values of all options.
+
+        .. versionadded:: 3.1
+        """
+        return dict(
+            (name, opt.value()) for name, opt in self._options.items())
 
     def define(self, name, default=None, type=None, help=None, metavar=None,
                multiple=False, group=None, callback=None):
@@ -138,10 +200,17 @@ class OptionParser(object):
         by later flags.
         """
         if name in self._options:
-            raise Error("Option %r already defined in %s", name,
-                        self._options[name].file_name)
+            raise Error("Option %r already defined in %s" %
+                        (name, self._options[name].file_name))
         frame = sys._getframe(0)
         options_file = frame.f_code.co_filename
+
+        # Can be called directly, or through top level define() fn, in which
+        # case, step up above that frame to look for real caller.
+        if (frame.f_back.f_code.co_filename == options_file and
+                frame.f_back.f_code.co_name == 'define'):
+            frame = frame.f_back
+
         file_name = frame.f_back.f_code.co_filename
         if file_name == options_file:
             file_name = ""
@@ -187,7 +256,7 @@ class OptionParser(object):
             arg = args[i].lstrip("-")
             name, equals, value = arg.partition("=")
             name = name.replace('-', '_')
-            if not name in self._options:
+            if name not in self._options:
                 self.print_help()
                 raise Error('Unrecognized command line option: %r' % name)
             option = self._options[name]
@@ -209,10 +278,14 @@ class OptionParser(object):
         If ``final`` is ``False``, parse callbacks will not be run.
         This is useful for applications that wish to combine configurations
         from multiple sources.
+
+        .. versionchanged:: 4.1
+           Config files are now always interpreted as utf-8 instead of
+           the system default encoding.
         """
         config = {}
-        with open(path) as f:
-            exec_in(f.read(), config, config)
+        with open(path, 'rb') as f:
+            exec_in(native_str(f.read()), config, config)
         for name in config:
             if name in self._options:
                 self._options[name].set(config[name])
@@ -310,6 +383,8 @@ class _Mockable(object):
 
 
 class _Option(object):
+    UNSET = object()
+
     def __init__(self, name, default=None, type=basestring_type, help=None,
                  metavar=None, multiple=False, file_name=None, group_name=None,
                  callback=None):
@@ -324,10 +399,10 @@ class _Option(object):
         self.group_name = group_name
         self.callback = callback
         self.default = default
-        self._value = None
+        self._value = _Option.UNSET
 
     def value(self):
-        return self.default if self._value is None else self._value
+        return self.default if self._value is _Option.UNSET else self._value
 
     def parse(self, value):
         _parse = {
@@ -339,7 +414,7 @@ class _Option(object):
         if self.multiple:
             self._value = []
             for part in value.split(","):
-                if self.type in (int, long):
+                if issubclass(self.type, numbers.Integral):
                     # allow ranges of the form X:Y (inclusive at both ends)
                     lo, _, hi = part.partition(":")
                     lo = _parse(lo)
@@ -359,11 +434,11 @@ class _Option(object):
                 raise Error("Option %r is required to be a list of %s" %
                             (self.name, self.type.__name__))
             for item in value:
-                if item != None and not isinstance(item, self.type):
+                if item is not None and not isinstance(item, self.type):
                     raise Error("Option %r is required to be a list of %s" %
                                 (self.name, self.type.__name__))
         else:
-            if value != None and not isinstance(value, self.type):
+            if value is not None and not isinstance(value, self.type):
                 raise Error("Option %r is required to be a %s (%s given)" %
                             (self.name, self.type.__name__, type(value)))
         self._value = value

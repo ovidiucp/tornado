@@ -17,8 +17,9 @@ try:
     from tornado.httpclient import AsyncHTTPClient
     from tornado.httpserver import HTTPServer
     from tornado.simple_httpclient import SimpleAsyncHTTPClient
-    from tornado.ioloop import IOLoop
+    from tornado.ioloop import IOLoop, TimeoutError
     from tornado import netutil
+    from tornado.process import Subprocess
 except ImportError:
     # These modules are not importable on app engine.  Parts of this module
     # won't work, but e.g. LogTrapTestCase and main() will.
@@ -28,7 +29,8 @@ except ImportError:
     IOLoop = None
     netutil = None
     SimpleAsyncHTTPClient = None
-from tornado.log import gen_log
+    Subprocess = None
+from tornado.log import gen_log, app_log
 from tornado.stack_context import ExceptionStackContext
 from tornado.util import raise_exc_info, basestring_type
 import functools
@@ -38,6 +40,7 @@ import re
 import signal
 import socket
 import sys
+import types
 
 try:
     from cStringIO import StringIO  # py2
@@ -48,10 +51,16 @@ except ImportError:
 # (either py27+ or unittest2) so tornado.test.util enforces
 # this requirement, but for other users of tornado.testing we want
 # to allow the older version if unitest2 is not available.
-try:
-    import unittest2 as unittest
-except ImportError:
+if sys.version_info >= (3,):
+    # On python 3, mixing unittest2 and unittest (including doctest)
+    # doesn't seem to work, so always use unittest.
     import unittest
+else:
+    # On python 2, prefer unittest2 when available.
+    try:
+        import unittest2 as unittest
+    except ImportError:
+        import unittest
 
 _next_port = 10000
 
@@ -63,8 +72,8 @@ def get_unused_port():
     only that a series of get_unused_port calls in a single process return
     distinct ports.
 
-    **Deprecated**.  Use bind_unused_port instead, which is guaranteed
-    to find an unused port.
+    .. deprecated::
+       Use bind_unused_port instead, which is guaranteed to find an unused port.
     """
     global _next_port
     port = _next_port
@@ -77,7 +86,7 @@ def bind_unused_port():
 
     Returns a tuple (socket, port).
     """
-    [sock] = netutil.bind_sockets(0, 'localhost', family=socket.AF_INET)
+    [sock] = netutil.bind_sockets(None, 'localhost', family=socket.AF_INET)
     port = sock.getsockname()[1]
     return sock, port
 
@@ -86,6 +95,8 @@ def get_async_test_timeout():
     """Get the global timeout setting for async tests.
 
     Returns a float, the timeout in seconds.
+
+    .. versionadded:: 3.1
     """
     try:
         return float(os.environ.get('ASYNC_TEST_TIMEOUT'))
@@ -93,17 +104,50 @@ def get_async_test_timeout():
         return 5
 
 
+class _TestMethodWrapper(object):
+    """Wraps a test method to raise an error if it returns a value.
+
+    This is mainly used to detect undecorated generators (if a test
+    method yields it must use a decorator to consume the generator),
+    but will also detect other kinds of return values (these are not
+    necessarily errors, but we alert anyway since there is no good
+    reason to return a value from a test.
+    """
+    def __init__(self, orig_method):
+        self.orig_method = orig_method
+
+    def __call__(self, *args, **kwargs):
+        result = self.orig_method(*args, **kwargs)
+        if isinstance(result, types.GeneratorType):
+            raise TypeError("Generator test methods should be decorated with "
+                            "tornado.testing.gen_test")
+        elif result is not None:
+            raise ValueError("Return value from test method ignored: %r" %
+                             result)
+
+    def __getattr__(self, name):
+        """Proxy all unknown attributes to the original method.
+
+        This is important for some of the decorators in the `unittest`
+        module, such as `unittest.skipIf`.
+        """
+        return getattr(self.orig_method, name)
+
+
 class AsyncTestCase(unittest.TestCase):
     """`~unittest.TestCase` subclass for testing `.IOLoop`-based
     asynchronous code.
 
     The unittest framework is synchronous, so the test must be
-    complete by the time the test method returns.  This class provides
-    the `stop()` and `wait()` methods for this purpose.  The test
+    complete by the time the test method returns.  This means that
+    asynchronous code cannot be used in quite the same way as usual.
+    To write test functions that use the same ``yield``-based patterns
+    used with the `tornado.gen` module, decorate your test methods
+    with `tornado.testing.gen_test` instead of
+    `tornado.gen.coroutine`.  This class also provides the `stop()`
+    and `wait()` methods for a more manual style of testing.  The test
     method itself must call ``self.wait()``, and asynchronous
     callbacks should call ``self.stop()`` to signal completion.
-    Alternately, the `gen_test` decorator can be used to use yield points
-    from the `tornado.gen` module.
 
     By default, a new `.IOLoop` is constructed for each test and is available
     as ``self.io_loop``.  This `.IOLoop` should be used in the construction of
@@ -118,8 +162,17 @@ class AsyncTestCase(unittest.TestCase):
 
     Example::
 
-        # This test uses argument passing between self.stop and self.wait.
+        # This test uses coroutine style.
         class MyTestCase(AsyncTestCase):
+            @tornado.testing.gen_test
+            def test_http_fetch(self):
+                client = AsyncHTTPClient(self.io_loop)
+                response = yield client.fetch("http://www.tornadoweb.org")
+                # Test contents of response
+                self.assertIn("FriendFeed", response.body)
+
+        # This test uses argument passing between self.stop and self.wait.
+        class MyTestCase2(AsyncTestCase):
             def test_http_fetch(self):
                 client = AsyncHTTPClient(self.io_loop)
                 client.fetch("http://www.tornadoweb.org/", self.stop)
@@ -128,7 +181,7 @@ class AsyncTestCase(unittest.TestCase):
                 self.assertIn("FriendFeed", response.body)
 
         # This test uses an explicit callback-based style.
-        class MyTestCase2(AsyncTestCase):
+        class MyTestCase3(AsyncTestCase):
             def test_http_fetch(self):
                 client = AsyncHTTPClient(self.io_loop)
                 client.fetch("http://www.tornadoweb.org/", self.handle_fetch)
@@ -143,13 +196,19 @@ class AsyncTestCase(unittest.TestCase):
                 self.assertIn("FriendFeed", response.body)
                 self.stop()
     """
-    def __init__(self, *args, **kwargs):
-        super(AsyncTestCase, self).__init__(*args, **kwargs)
+    def __init__(self, methodName='runTest', **kwargs):
+        super(AsyncTestCase, self).__init__(methodName, **kwargs)
         self.__stopped = False
         self.__running = False
         self.__failure = None
         self.__stop_args = None
         self.__timeout = None
+
+        # It's easy to forget the @gen_test decorator, but if you do
+        # the test will silently be ignored because nothing will consume
+        # the generator.  Replace the test method with a wrapper that will
+        # make sure it's not an undecorated generator.
+        setattr(self, methodName, _TestMethodWrapper(getattr(self, methodName)))
 
     def setUp(self):
         super(AsyncTestCase, self).setUp()
@@ -157,6 +216,8 @@ class AsyncTestCase(unittest.TestCase):
         self.io_loop.make_current()
 
     def tearDown(self):
+        # Clean up Subprocess, so it can be used again with a new ioloop.
+        Subprocess.uninitialize()
         self.io_loop.clear_current()
         if (not IOLoop.initialized() or
                 self.io_loop is not IOLoop.instance()):
@@ -180,7 +241,11 @@ class AsyncTestCase(unittest.TestCase):
         return IOLoop()
 
     def _handle_exception(self, typ, value, tb):
-        self.__failure = (typ, value, tb)
+        if self.__failure is None:
+            self.__failure = (typ, value, tb)
+        else:
+            app_log.error("multiple unhandled exceptions in test",
+                          exc_info=(typ, value, tb))
         self.stop()
         return True
 
@@ -216,12 +281,16 @@ class AsyncTestCase(unittest.TestCase):
     def wait(self, condition=None, timeout=None):
         """Runs the `.IOLoop` until stop is called or timeout has passed.
 
-        In the event of a timeout, an exception will be thrown. The default
-        timeout is 5 seconds; it may be overridden with a ``timeout`` keyword
-        argument or globally with the ASYNC_TEST_TIMEOUT environment variable.
+        In the event of a timeout, an exception will be thrown. The
+        default timeout is 5 seconds; it may be overridden with a
+        ``timeout`` keyword argument or globally with the
+        ``ASYNC_TEST_TIMEOUT`` environment variable.
 
         If ``condition`` is not None, the `.IOLoop` will be restarted
         after `stop()` until ``condition()`` returns true.
+
+        .. versionchanged:: 3.1
+           Added the ``ASYNC_TEST_TIMEOUT`` environment variable.
         """
         if timeout is None:
             timeout = get_async_test_timeout()
@@ -334,6 +403,8 @@ class AsyncHTTPTestCase(AsyncTestCase):
 
     def tearDown(self):
         self.http_server.stop()
+        self.io_loop.run_sync(self.http_server.close_all_connections,
+                              timeout=get_async_test_timeout())
         if (not IOLoop.initialized() or
                 self.http_client.io_loop is not IOLoop.instance()):
             self.http_client.close()
@@ -346,10 +417,8 @@ class AsyncHTTPSTestCase(AsyncHTTPTestCase):
     Interface is generally the same as `AsyncHTTPTestCase`.
     """
     def get_http_client(self):
-        # Some versions of libcurl have deadlock bugs with ssl,
-        # so always run these tests with SimpleAsyncHTTPClient.
-        return SimpleAsyncHTTPClient(io_loop=self.io_loop, force_instance=True,
-                                     defaults=dict(validate_cert=False))
+        return AsyncHTTPClient(io_loop=self.io_loop, force_instance=True,
+                               defaults=dict(validate_cert=False))
 
     def get_httpserver_options(self):
         return dict(ssl_options=self.get_ssl_options())
@@ -385,7 +454,7 @@ def gen_test(func=None, timeout=None):
                 response = yield gen.Task(self.fetch('/'))
 
     By default, ``@gen_test`` times out after 5 seconds. The timeout may be
-    overridden globally with the ASYNC_TEST_TIMEOUT environment variable,
+    overridden globally with the ``ASYNC_TEST_TIMEOUT`` environment variable,
     or for each test with the ``timeout`` keyword argument::
 
         class MyTest(AsyncHTTPTestCase):
@@ -393,20 +462,53 @@ def gen_test(func=None, timeout=None):
             def test_something_slow(self):
                 response = yield gen.Task(self.fetch('/'))
 
-    If both the environment variable and the parameter are set, ``gen_test``
-    uses the maximum of the two.
+    .. versionadded:: 3.1
+       The ``timeout`` argument and ``ASYNC_TEST_TIMEOUT`` environment
+       variable.
+
+    .. versionchanged:: 4.0
+       The wrapper now passes along ``*args, **kwargs`` so it can be used
+       on functions with arguments.
     """
     if timeout is None:
         timeout = get_async_test_timeout()
 
     def wrap(f):
-        f = gen.coroutine(f)
-
+        # Stack up several decorators to allow us to access the generator
+        # object itself.  In the innermost wrapper, we capture the generator
+        # and save it in an attribute of self.  Next, we run the wrapped
+        # function through @gen.coroutine.  Finally, the coroutine is
+        # wrapped again to make it synchronous with run_sync.
+        #
+        # This is a good case study arguing for either some sort of
+        # extensibility in the gen decorators or cancellation support.
         @functools.wraps(f)
-        def wrapper(self):
-            return self.io_loop.run_sync(
-                functools.partial(f, self), timeout=timeout)
-        return wrapper
+        def pre_coroutine(self, *args, **kwargs):
+            result = f(self, *args, **kwargs)
+            if isinstance(result, types.GeneratorType):
+                self._test_generator = result
+            else:
+                self._test_generator = None
+            return result
+
+        coro = gen.coroutine(pre_coroutine)
+
+        @functools.wraps(coro)
+        def post_coroutine(self, *args, **kwargs):
+            try:
+                return self.io_loop.run_sync(
+                    functools.partial(coro, self, *args, **kwargs),
+                    timeout=timeout)
+            except TimeoutError as e:
+                # run_sync raises an error with an unhelpful traceback.
+                # If we throw it back into the generator the stack trace
+                # will be replaced by the point where the test is stopped.
+                self._test_generator.throw(e)
+                # In case the test contains an overly broad except clause,
+                # we may get back here.  In this case re-raise the original
+                # exception, which is better than nothing.
+                raise
+        return post_coroutine
 
     if func is not None:
         # Used like:
@@ -439,6 +541,9 @@ class LogTrapTestCase(unittest.TestCase):
     `logging.basicConfig` and the "pretty logging" configured by
     `tornado.options`.  It is not compatible with other log buffering
     mechanisms, such as those provided by some test runners.
+
+    .. deprecated:: 4.1
+       Use the unittest module's ``--buffer`` option instead, or `.ExpectLog`.
     """
     def run(self, result=None):
         logger = logging.getLogger()

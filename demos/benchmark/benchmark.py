@@ -22,6 +22,11 @@ import random
 import signal
 import subprocess
 
+try:
+    xrange
+except NameError:
+    xrange = range
+
 # choose a random port to avoid colliding with TIME_WAIT sockets left over
 # from previous runs.
 define("min_port", type=int, default=8000)
@@ -49,7 +54,7 @@ class RootHandler(RequestHandler):
         pass
 
 def handle_sigchld(sig, frame):
-    IOLoop.instance().add_callback(IOLoop.instance().stop)
+    IOLoop.instance().add_callback_from_signal(IOLoop.instance().stop)
 
 def main():
     parse_command_line()
