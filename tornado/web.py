@@ -2179,7 +2179,6 @@ class StaticFileHandler(RequestHandler):
     def initialize(self, path, default_filename=None):
         self.root = path
         self.default_filename = default_filename
-        self.preprocess_data_fn = preprocess_data_fn
 
     @classmethod
     def reset(cls):

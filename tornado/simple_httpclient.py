@@ -185,7 +185,6 @@ class _HTTPConnection(httputil.HTTPMessageDelegate):
         self.headers = None
         self.chunks = []
         self._decompressor = None
-        self.ca_certs = ca_certs
         # Timeout handle returned by IOLoop.add_timeout
         self._timeout = None
         self._sockaddr = None
