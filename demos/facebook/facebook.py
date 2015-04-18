@@ -21,6 +21,7 @@ import tornado.httpserver
 import tornado.ioloop
 import tornado.options
 import tornado.web
+import logging
 
 from tornado.options import define, options
 
@@ -93,7 +94,9 @@ class AuthLoginHandler(BaseHandler, tornado.auth.FacebookGraphMixin):
 
     def _on_auth(self, user):
         if not user:
-            raise tornado.web.HTTPError(500, "Facebook auth failed")
+            logging.info("Facebook access denied")
+            self.redirect("/")
+            return
         self.set_secure_cookie("fbdemo_user", tornado.escape.json_encode(user))
         self.redirect(self.get_argument("next", "/"))
 
