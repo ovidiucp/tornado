@@ -857,9 +857,9 @@ class GoogleOAuth2Mixin(OAuth2Mixin):
 class FacebookGraphMixin(OAuth2Mixin):
     """Facebook authentication using the new Graph API and OAuth2."""
     _OAUTH_ACCESS_TOKEN_URL = "https://graph.facebook.com/oauth/access_token?"
-    _OAUTH_AUTHORIZE_URL = "https://www.facebook.com/dialog/oauth?"
+    _OAUTH_AUTHORIZE_URL = "https://www.facebook.com/v2.3/dialog/oauth?"
     _OAUTH_NO_CALLBACKS = False
-    _FACEBOOK_BASE_URL = "https://graph.facebook.com"
+    _FACEBOOK_BASE_URL = "https://graph.facebook.com/v2.3"
 
     @_auth_return_future
     def get_authenticated_user(self, redirect_uri, client_id, client_secret,
