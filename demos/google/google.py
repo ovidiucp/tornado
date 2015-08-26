@@ -51,7 +51,8 @@ import tornado.options
 import tornado.web
 import tornado.gen
 from tornado.auth import GoogleOAuth2Mixin
-from tornado import httpclient
+from tornado import httpclient, gen
+import logging
 
 from tornado.options import define, options
 
@@ -100,29 +101,42 @@ class MainHandler(BaseHandler):
 
 
 class AuthHandler(BaseHandler, GoogleOAuth2Mixin):
-    @tornado.gen.coroutine
+    @tornado.web.asynchronous
+    @gen.engine
     def get(self):
+        code = self.get_argument("code", None)
+        error = self.get_argument('error', None)
+        logging.info('AuthHandler invoked, code: %s, error: %s', code, error)
         if self.get_argument("code", None):
-            response = yield self.get_authenticated_user(
+            logging.info('sending get_authenticated_user')
+            response = yield gen.Task(
+                self.get_authenticated_user,
                 redirect_uri=self.settings['redirect_uri'],
                 code=self.get_argument('code'))
+            logging.info('back from get_authenticated_user')
             access_token = response['access_token']
             http_client = self.get_auth_http_client()
             url = 'https://www.googleapis.com/oauth2/v1/userinfo?access_token='
-            response = yield http_client.fetch(url + access_token)
-            print 'Got response:', response.body
+            url += access_token
+            logging.info('fetching %s', url)
+            response = yield gen.Task(http_client.fetch, url)
+            logging.info('Got response: %s', response.body)
             self.set_secure_cookie("user", response.body)
             self.set_secure_cookie("access_token", access_token)
             self.redirect('/')
         elif self.get_argument('error', None):
             self.write("Access denied. <br><br><a href='/auth/login'>Login</a>")
+            self.finish()
         else:
-            yield self.authorize_redirect(
+            logging.info('calling authorize_redirect')
+            yield gen.Task(
+                self.authorize_redirect,
                 redirect_uri=self.settings['redirect_uri'],
                 client_id=self.settings['google_oauth']['key'],
                 scope=['email', 'profile', 'openid'],
                 response_type='code',
                 extra_params={'approval_prompt': 'auto'})
+            logging.info('returned from authorize_redirect')
 
 class LogoutHandler(BaseHandler):
     @tornado.gen.coroutine
