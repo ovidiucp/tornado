@@ -40,12 +40,14 @@ Here is a simple "Hello, world" example web app for Tornado::
         def get(self):
             self.write("Hello, world")
 
-    application = tornado.web.Application([
-        (r"/", MainHandler),
-    ])
+    def make_app():
+        return tornado.web.Application([
+            (r"/", MainHandler),
+        ])
 
     if __name__ == "__main__":
-        application.listen(8888)
+        app = make_app()
+        app.listen(8888)
         tornado.ioloop.IOLoop.current().start()
 
 This example does not use any of Tornado's asynchronous features; for
@@ -77,23 +79,18 @@ copy of the source tarball as well.
 The Tornado source code is `hosted on GitHub
 <https://github.com/tornadoweb/tornado>`_.
 
-**Prerequisites**: Tornado runs on Python 2.6, 2.7, 3.2, 3.3, and 3.4.  It
-requires the `certifi <https://pypi.python.org/pypi/certifi>`_ package
-on all Python versions, and the `backports.ssl_match_hostname
-<https://pypi.python.org/pypi/backports.ssl_match_hostname>`_ package
-on Python 2.  These will be installed automatically when using
-``pip`` or ``easy_install``).  Some Tornado features may
-require one of the following optional libraries:
+**Prerequisites**: Tornado 4.3 runs on Python 2.7, and 3.3+
+For Python 2, version 2.7.9 or newer is *strongly*
+recommended for the improved SSL support. In addition to the requirements
+which will be installed automatically by ``pip`` or ``setup.py install``,
+the following optional packages may be useful:
 
-* `unittest2 <https://pypi.python.org/pypi/unittest2>`_ is needed to run
-  Tornado's test suite on Python 2.6 (it is unnecessary on more recent
-  versions of Python)
 * `concurrent.futures <https://pypi.python.org/pypi/futures>`_ is the
   recommended thread pool for use with Tornado and enables the use of
   `~tornado.netutil.ThreadedResolver`.  It is needed only on Python 2;
   Python 3 includes this package in the standard library.
 * `pycurl <http://pycurl.sourceforge.net>`_ is used by the optional
-  ``tornado.curl_httpclient``.  Libcurl version 7.18.2 or higher is required;
+  ``tornado.curl_httpclient``.  Libcurl version 7.19.3.1 or higher is required;
   version 7.21.1 or higher is recommended.
 * `Twisted <http://www.twistedmatrix.com>`_ may be used with the classes in
   `tornado.platform.twisted`.
@@ -103,6 +100,8 @@ require one of the following optional libraries:
 * `Monotime <https://pypi.python.org/pypi/Monotime>`_ adds support for
   a monotonic clock, which improves reliability in environments
   where clock adjustments are frequent.  No longer needed in Python 3.3.
+* `monotonic <https://pypi.python.org/pypi/monotonic>`_ adds support for
+  a monotonic clock. Alternative to Monotime.  No longer needed in Python 3.3.
 
 **Platforms**: Tornado should run on any Unix-like platform, although
 for the best performance and scalability only Linux (with ``epoll``)
@@ -148,8 +147,7 @@ resources can be found on the `Tornado wiki
 announced on the `announcements mailing list
 <http://groups.google.com/group/python-tornado-announce>`_.
 
-Tornado is one of `Facebook's open source technologies
-<http://developers.facebook.com/opensource/>`_. It is available under
+Tornado is available under
 the `Apache License, Version 2.0
 <http://www.apache.org/licenses/LICENSE-2.0.html>`_.
 

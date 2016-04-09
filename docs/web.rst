@@ -25,11 +25,26 @@
    These methods can be made asynchronous with one of the following
    decorators: `.gen.coroutine`, `.return_future`, or `asynchronous`.
 
+   The arguments to these methods come from the `.URLSpec`: Any
+   capturing groups in the regular expression become arguments to the
+   HTTP verb methods (keyword arguments if the group is named,
+   positional arguments if its unnamed).
+
+   To support a method not on this list, override the class variable
+   ``SUPPORTED_METHODS``::
+
+     class WebDAVHandler(RequestHandler):
+         SUPPORTED_METHODS = RequestHandler.SUPPORTED_METHODS + ('PROPFIND',)
+
+         def propfind(self):
+             pass
+
    .. automethod:: RequestHandler.get
-   .. automethod:: RequestHandler.post
-   .. automethod:: RequestHandler.put
-   .. automethod:: RequestHandler.delete
    .. automethod:: RequestHandler.head
+   .. automethod:: RequestHandler.post
+   .. automethod:: RequestHandler.delete
+   .. automethod:: RequestHandler.patch
+   .. automethod:: RequestHandler.put
    .. automethod:: RequestHandler.options
 
    Input
@@ -86,6 +101,7 @@
    .. automethod:: RequestHandler.clear_cookie
    .. automethod:: RequestHandler.clear_all_cookies
    .. automethod:: RequestHandler.get_secure_cookie
+   .. automethod:: RequestHandler.get_secure_cookie_key_version
    .. automethod:: RequestHandler.set_secure_cookie
    .. automethod:: RequestHandler.create_signed_value
    .. autodata:: MIN_SUPPORTED_SIGNED_VALUE_VERSION
@@ -177,6 +193,9 @@
 
          * ``cookie_secret``: Used by `RequestHandler.get_secure_cookie`
            and `.set_secure_cookie` to sign cookies.
+         * ``key_version``: Used by requestHandler `.set_secure_cookie`
+           to sign cookies with a specific key when ``cookie_secret``
+           is a key dictionary.
          * ``login_url``: The `authenticated` decorator will redirect
            to this url if the user is not logged in.  Can be further
            customized by overriding `RequestHandler.get_login_url`
@@ -187,6 +206,9 @@
            version), but may be set to a lower value temporarily
            during version transitions.  New in Tornado 3.2.2, which
            introduced XSRF cookie version 2.
+         * ``xsrf_cookie_kwargs``: May be set to a dictionary of
+           additional arguments to be passed to `.RequestHandler.set_cookie`
+           for the XSRF cookie.
          * ``twitter_consumer_key``, ``twitter_consumer_secret``,
            ``friendfeed_consumer_key``, ``friendfeed_consumer_secret``,
            ``google_consumer_key``, ``google_consumer_secret``,
@@ -211,6 +233,9 @@
            If this setting is used the ``template_path`` and ``autoescape``
            settings are ignored.  Can be further customized by overriding
            `RequestHandler.create_template_loader`.
+         * ``template_whitespace``: Controls handling of whitespace in
+           templates; see `tornado.template.filter_whitespace` for allowed
+           values. New in Tornado 4.3.
 
          Static file settings:
 

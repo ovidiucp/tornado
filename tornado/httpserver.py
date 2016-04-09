@@ -121,6 +121,9 @@ class HTTPServer(TCPServer, Configurable,
        `.HTTPServerConnectionDelegate.start_request` is now called with
        two arguments ``(server_conn, request_conn)`` (in accordance with the
        documentation) instead of one ``(request_conn)``.
+
+    .. versionchanged:: 4.2
+       `HTTPServer` is now a subclass of `tornado.util.Configurable`.
     """
     def __init__(self, *args, **kwargs):
         # Ignore args to __init__; real initialization belongs in
@@ -185,7 +188,6 @@ class HTTPServer(TCPServer, Configurable,
 class _HTTPRequestContext(object):
     def __init__(self, stream, address, protocol):
         self.address = address
-        self.protocol = protocol
         # Save the socket's address family now so we know how to
         # interpret self.address even after the stream is closed
         # and its socket attribute replaced with None.

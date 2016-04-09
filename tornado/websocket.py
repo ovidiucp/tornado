@@ -16,8 +16,7 @@ the protocol (known as "draft 76") and are not compatible with this module.
    Removed support for the draft 76 protocol version.
 """
 
-from __future__ import (absolute_import, division,
-                        print_function, with_statement)
+from __future__ import absolute_import, division, print_function, with_statement
 # Author: Jacob Kristhammar, 2010
 
 import base64
@@ -129,8 +128,7 @@ class WebSocketHandler(tornado.web.RequestHandler):
     to accept it before the websocket connection will succeed.
     """
     def __init__(self, application, request, **kwargs):
-        tornado.web.RequestHandler.__init__(self, application, request,
-                                            **kwargs)
+        super(WebSocketHandler, self).__init__(application, request, **kwargs)
         self.ws_connection = None
         self.close_code = None
         self.close_reason = None
@@ -208,12 +206,15 @@ class WebSocketHandler(tornado.web.RequestHandler):
         .. versionchanged:: 3.2
            `WebSocketClosedError` was added (previously a closed connection
            would raise an `AttributeError`)
+
+        .. versionchanged:: 4.3
+           Returns a `.Future` which can be used for flow control.
         """
         if self.ws_connection is None:
             raise WebSocketClosedError()
         if isinstance(message, dict):
             message = tornado.escape.json_encode(message)
-        self.ws_connection.write_message(message, binary=binary)
+        return self.ws_connection.write_message(message, binary=binary)
 
     def select_subprotocol(self, subprotocols):
         """Invoked when a new WebSocket requests specific subprotocols.
@@ -444,7 +445,8 @@ class _PerMessageDeflateCompressor(object):
             self._compressor = None
 
     def _create_compressor(self):
-        return zlib.compressobj(-1, zlib.DEFLATED, -self._max_wbits)
+        return zlib.compressobj(tornado.web.GZipContentEncoding.GZIP_LEVEL,
+                                zlib.DEFLATED, -self._max_wbits)
 
     def compress(self, data):
         compressor = self._compressor or self._create_compressor()
@@ -670,7 +672,7 @@ class WebSocketProtocol13(WebSocketProtocol):
         frame += data
         self._wire_bytes_out += len(frame)
         try:
-            self.stream.write(frame)
+            return self.stream.write(frame)
         except StreamClosedError:
             self._abort()
 
@@ -687,7 +689,7 @@ class WebSocketProtocol13(WebSocketProtocol):
         if self._compressor:
             message = self._compressor.compress(message)
             flags |= self.RSV1
-        self._write_frame(True, opcode, message, flags=flags)
+        return self._write_frame(True, opcode, message, flags=flags)
 
     def write_ping(self, data):
         """Send ping frame."""
@@ -707,7 +709,7 @@ class WebSocketProtocol13(WebSocketProtocol):
         reserved_bits = header & self.RSV_MASK
         self._frame_opcode = header & self.OPCODE_MASK
         self._frame_opcode_is_control = self._frame_opcode & 0x8
-        if self._decompressor is not None:
+        if self._decompressor is not None and self._frame_opcode != 0:
             self._frame_compressed = bool(reserved_bits & self.RSV1)
             reserved_bits &= ~self.RSV1
         if reserved_bits:
@@ -835,7 +837,8 @@ class WebSocketProtocol13(WebSocketProtocol):
                 self.handler.close_code = struct.unpack('>H', data[:2])[0]
             if len(data) > 2:
                 self.handler.close_reason = to_unicode(data[2:])
-            self.close()
+            # Echo the received close code, if any (RFC 6455 section 5.5.1).
+            self.close(self.handler.close_code)
         elif opcode == 0x9:
             # Ping
             self._write_frame(True, 0xA, data)
@@ -886,6 +889,7 @@ class WebSocketClientConnection(simple_httpclient._HTTPConnection):
         self.read_queue = collections.deque()
         self.key = base64.b64encode(os.urandom(16))
         self._on_message_callback = on_message_callback
+        self.close_code = self.close_reason = None
 
         scheme, sep, rest = request.url.partition(':')
         scheme = {'ws': 'http', 'wss': 'https'}[scheme]
@@ -908,7 +912,7 @@ class WebSocketClientConnection(simple_httpclient._HTTPConnection):
         self.tcp_client = TCPClient(io_loop=io_loop)
         super(WebSocketClientConnection, self).__init__(
             io_loop, None, request, lambda: None, self._on_http_response,
-            104857600, self.tcp_client, 65536)
+            104857600, self.tcp_client, 65536, 104857600)
 
     def close(self, code=None, reason=None):
         """Closes the websocket connection.
@@ -967,7 +971,7 @@ class WebSocketClientConnection(simple_httpclient._HTTPConnection):
 
     def write_message(self, message, binary=False):
         """Sends a message to the WebSocket server."""
-        self.protocol.write_message(message, binary)
+        return self.protocol.write_message(message, binary)
 
     def read_message(self, callback=None):
         """Reads a message from the WebSocket server.
@@ -1021,7 +1025,7 @@ def websocket_connect(url, io_loop=None, callback=None, connect_timeout=None,
     style, the application typically calls
     `~.WebSocketClientConnection.read_message` in a loop::
 
-        conn = yield websocket_connection(loop)
+        conn = yield websocket_connect(url)
         while True:
             msg = yield conn.read_message()
             if msg is None: break
